@@ -1,0 +1,5 @@
+
+
+# Exlcude hadoop package
+hadoop/**
+!hadoop/readme

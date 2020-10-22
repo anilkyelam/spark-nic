@@ -1,0 +1,482 @@
+
+
+======================== HANDY COMMANDS =======================
+
+Start all: start-dfs.sh && start-yarn.sh
+Stop all: stop-yarn.sh && stop-dfs.sh
+
+	
+	
+==========================  HDFS + YARN SETUP  =========================================================================================
+
+1. Install proper java version (latest is not supported by Hadoop yet). 
+	Use Java 8 as stated on hadoop website or here: https://stackoverflow.com/questions/52155078/how-to-fix-hadoop-warning-an-illegal-reflective-access-operation-has-occurred-e
+	Some of the machines have Java 10 installed. The way to configure is install Java 8 and change default version to 8.
+	Java versions can co-exist, so install what is needed and use it for hadoop
+	https://stackoverflow.com/questions/12836666/how-to-remove-open-jdk-completely-in-ubuntu
+	sudo apt-get install openjdk-8-jdk
+	To see available versions: 	update-alternatives --display java
+	
+2. Download a stable hadoop version. 
+
+3. Create a common user for hadoop on all machines, and a common group to set as a supergroup.
+	Username: hadoop
+	Password: <Ask>
+
+	useradd hadoop
+	addgroup hadoopgroup
+	sudo usermod -a -G hadoopgroup ayelam
+	
+	Set dfs.permissions.superusergroup to this group in hdfs-site.xml
+	
+	<property>
+		<name>dfs.permissions.superusergroup</name>
+		<value>hadoopgroup</value>
+	</property>
+	
+	Or set HDFS permissions checks to false as this is dev environment
+	<property>
+		<name>dfs.permissions.enabled</name>
+		<value>false</value>
+	</property>
+
+3. Figure out the network names to use for all the nodes. 
+	In our case, we have to let the traffic go through a specific network interface. 
+	Start with b09-40(10.0.0.1) and b09-38 (10.0.1.1)
+	Generate ssh key: 
+		ssh-keygen -b 4096
+	Copy it to all the machines:
+		ssh-copy-id -i $HOME/.ssh/id_rsa.pub hadoop@10.0.0.1
+		ssh-copy-id -i $HOME/.ssh/id_rsa.pub hadoop@10.0.1.1
+	
+4. Copy unzipped hadoop to home folder of hadoop user on all machines (do it from hadoop user context so it retains permissions)
+
+( Errors ignored:
+cp: cannot open 'hadoop/share/hadoop/httpfs/tomcat/conf/catalina.properties' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/httpfs/tomcat/conf/catalina.policy' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/httpfs/tomcat/conf/tomcat-users.xml' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/httpfs/tomcat/conf/context.xml' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/httpfs/tomcat/conf/web.xml' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/kms/tomcat/conf/context.xml' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/kms/tomcat/conf/web.xml' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/kms/tomcat/conf/catalina.properties' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/kms/tomcat/conf/catalina.policy' for reading: Permission denied
+cp: cannot open 'hadoop/share/hadoop/kms/tomcat/conf/tomcat-users.xml' for reading: Permission denied
+)
+
+	And add the folder to path by adding below line to .profile file (/usr/local/home/hadoop/.profile)
+	PATH=/usr/local/home/hadoop/hadoop/bin:/usr/local/home/hadoop/hadoop/sbin:$PATH
+	
+5. Set JAVA_HOME (on all nodes). Use Java 8 installed in step 1
+	Edit ~/hadoop/etc/hadoop/hadoop-env.sh and replace this line:
+	vim ~/hadoop/etc/hadoop/hadoop-env.sh
+	export JAVA_HOME=${JAVA_HOME} with
+	export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64/jre
+	
+6. Set name node location on each node by updating ~/hadoop/etc/hadoop/core-site.xml
+	<?xml version="1.0" encoding="UTF-8"?>
+	<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>fs.default.name</name>			(<name>fs.defaultFS</name> in hadoop 3)
+            <value>hdfs://b09-40.sysnet.ucsd.edu:9000</value>
+        </property>
+    </configuration>
+	
+7. Set path for HDFS, editing hdfs-site.xml
+	<configuration>
+		<property>
+				<name>dfs.namenode.name.dir</name>
+				<value>/usr/local/home/hadoop/data/nameNode</value> 
+		</property>
+
+		<property>
+				<name>dfs.datanode.data.dir</name>
+				<value>/usr/local/home/hadoop/data/dataNode</value>
+		</property>
+
+		<property>
+				<name>dfs.replication</name>
+				<value>1</value>
+		</property>
+	</configuration>
+	
+8. Set YARN as Job scheduler
+	https://www.linode.com/docs/databases/hadoop/how-to-install-and-set-up-hadoop-cluster/#set-yarn-as-job-scheduler
+	cd hadoop/etc/hadoop/
+	mv mapred-site.xml.template mapred-site.xml
+	vim mapred-site.xml and place the below text:
+	<configuration>
+		<property>
+            <name>mapreduce.framework.name</name>
+            <value>yarn</value>
+		</property>
+	</configuration>
+	
+9. Configure YARN
+	vim yarn-site-xml
+	<configuration>
+        <property>
+            <name>yarn.acl.enable</name>
+            <value>0</value>
+        </property>
+
+        <property>
+            <name>yarn.resourcemanager.hostname</name>
+            <value>127.0.0.1</value>
+        </property>
+
+        <property>
+            <name>yarn.nodemanager.aux-services</name>
+            <value>mapreduce_shuffle</value>
+        </property>
+	</configuration>
+	
+	
+10. Configure slaves files and add names of all the slaves, in ~/hadoop/etc/hadoop/slaves (~/hadoop/etc/hadoop/workers in hadoop 3)
+	b09-44.sysnet.ucsd.edu
+	b09-42.sysnet.ucsd.edu
+	b09-40.sysnet.ucsd.edu
+	b09-38.sysnet.ucsd.edu
+	b09-36.sysnet.ucsd.edu
+	b09-34.sysnet.ucsd.edu
+	b09-32.sysnet.ucsd.edu
+	b09-30.sysnet.ucsd.edu
+	
+11. Set memory allocation for containers. Check this config for current cluster!!
+
+	Edit /home/hadoop/hadoop/etc/hadoop/yarn-site.xml and add the following lines:
+	<property>
+        <name>yarn.nodemanager.resource.memory-mb</name>
+        <value>61440</value>
+	</property>
+
+	<property>
+			<name>yarn.scheduler.maximum-allocation-mb</name>
+			<value>61440</value>
+	</property>
+
+	<property>
+			<name>yarn.scheduler.minimum-allocation-mb</name>
+			<value>1024</value>
+	</property>
+
+	<property>
+			<name>yarn.nodemanager.vmem-check-enabled</name>
+			<value>false</value>
+	</property>
+	
+	Edit /home/hadoop/hadoop/etc/hadoop/mapred-site.xml and add the following lines: (DONT WORRY ABOUT THIS FOR SPARK + YARN)
+	<property>
+        <name>yarn.app.mapreduce.am.resource.mb</name>
+        <value>10240</value>
+	</property>
+
+	<property>
+			<name>mapreduce.map.memory.mb</name>
+			<value>10240</value>
+	</property>
+
+	<property>
+			<name>mapreduce.reduce.memory.mb</name>
+			<value>10240</value>
+	</property>
+	
+12. Copy config files to all the slave nodes
+	scp ~/hadoop/etc/hadoop/* (slave_name):/usr/local/home/hadoop/hadoop/etc/hadoop/
+	
+	
+13. Format HDFS and it is now ready to use.
+	hdfs namenode -format
+	
+	
+14. Start dfs
+	start-dfs.sh
+	Accept secondary name node on [0.0.0.0]. Then you can browse hdfs on http://b09-40.sysnet.ucsd.edu:50070
+	Datanode bug: Set this setting in hdfs-default.xml to false to turn off data node name resolution. dfs.namenode.datanode.registration.ip-hostname-check
+		<property>
+			<name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+			<value>false</value>
+		</property>
+	
+	
+15. To stop dfs: stop-dfs.sh
+16. Check: hdfs dfsadmin -report
+
+17. Run YARN: 
+	start-yarn.sh
+	stop-yarn.sh
+	yarn node -list
+	yarn application -list
+	Web UI at http://b09-40.sysnet.ucsd.edu:8088
+
+18. Adding more nodes. To summarize for b09-36:
+	With ayelam on new node:
+		sudo adduser hadoop
+		sudo addgroup hadoopgroup
+		update-alternatives --display java
+		sudo apt-get install openjdk-8-jdk
+	With hadoop user on b09-30:
+		Add new node to ~/hadoop/etc/hadoop/slaves file
+		ssh-copy-id -i $HOME/.ssh/id_rsa.pub hadoop@b09-44
+		scp .profile b09-44:~/
+		scp -r ~/hadoop b09-44:~/
+		
+
+19. Switching to YARN Secure Containers (LinuxContainerExecutor) to enable NUMA, however it comes with a lot of additional securty stuff we don't need but have to deal with.
+
+	https://hadoop.apache.org/docs/r2.7.2/hadoop-yarn/hadoop-yarn-site/SecureContainer.html
+	https://www.ibm.com/support/knowledgecenter/en/SSPT3X_4.1.0/com.ibm.swg.im.infosphere.biginsights.install.doc/doc/inst_adv_yarn_config.html
+	a. Enable settings as shown in the above links and change permissions of container-executor binary and cfg files as indicated. (including some folders)
+	b. To retain control over folders by hadoop user however, we use the hadoop group as the owning group for everything that should be owned by the root user.
+		sudo chown root:hadoop /usr/local/home/hadoop/hadoop3.2/bin/container-executor
+		sudo chmod 6050  /usr/local/home/hadoop/hadoop3.2/bin/container-executor
+		sudo chown root:hadoop /usr/local/home/hadoop/
+		sudo chown root:hadoop /usr/local/home/hadoop/hadoop3.2/
+		sudo chown root:hadoop /usr/local/home/hadoop/hadoop3.2/etc/
+		sudo chown root:hadoop /usr/local/home/hadoop/hadoop3.2/etc/hadoop/
+		sudo chown root:hadoop /usr/local/home/hadoop/hadoop3.2/etc/hadoop/container-executor.cfg
+		
+		# Give write access to hadoop group on other files to not have to sudo to edit. However, this applies to none of the folders or files in above commands.
+		# Still a pain to create files in the above folders
+		sudo chmod g+rwX /usr/local/home/hadoop/spark -R
+		sudo chown hadoop /usr/local/home/hadoop/hadoop3.2/etc/hadoop/*site.xml
+
+20. To switch from OpenJDK to OracleJDK on one of the nodes (for enabling flight recorder in our case):
+	sudo apt-get purge openjdk-\*	# Remove old java
+	sudo mkdir -p /usr/local/java 	# Download and get oracle java
+  	sudo cp -r jdk-8u221-linux-x64.tar.gz /usr/local/java/
+  	cd /usr/local/java/ && sudo tar xvzf jdk-8u221-linux-x64.tar.gz
+	-- Add java to path and set java home variable 
+	sudo vim /etc/profile
+	JAVA_HOME=/usr/local/java/jdk1.8.0_221
+	PATH=$PATH:$HOME/bin:$JAVA_HOME/bin
+	export JAVA_HOME
+	export PATH
+  	source /etc/profile
+  	java -version					# Check java version
+	sudo update-alternatives --install "/usr/bin/java" "java" "/usr/local/java/jdk1.8.0_221/bin/java" 1			# Install java to alternatives
+  	sudo update-alternatives --list java
+	Update JAVA_HOME variable in places, especially in .profile and hadoop-env.sh files
+
+	Add "-XX:+UnlockCommercialFeatures -XX:+FlightRecorder" to JVM options (e.g., spark.executor.extraJavaOptions)
+	Get JVM process id using "jps"
+	jcmd <process-id> JFR.start filename=output-file.jfr duration=10s	
+
+======================================================  INTEGRATING SPARK ================================================================
+
+1. Download spark on the master node and add it to path
+	wget https://www-eu.apache.org/dist/spark/spark-2.3.2/spark-2.3.2-bin-hadoop2.7.tgz 
+	tar -xvf spark-2.3.2-bin-hadoop2.7.tgz
+	mv spark-2.3.2-bin-hadoop2.7 spark
+	
+	In .profile, add
+	PATH=/usr/local/home/hadoop/spark/bin:$PATH
+	
+2. Integrate Spark with YARN
+	
+	To tell spark about hadoop folder, add below commands to environment (using .profile file)
+	export HADOOP_CONF_DIR=/usr/local/home/hadoop/hadoop/etc/hadoop
+	export SPARK_HOME=/usr/local/home/hadoop/spark
+	export LD_LIBRARY_PATH=/usr/local/home/hadoop/hadoop/lib/native:$LD_LIBRARY_PATH
+	source .profile
+	
+	Tell spark to use YARN as cluster manager
+	mv $SPARK_HOME/conf/spark-defaults.conf.template $SPARK_HOME/conf/spark-defaults.conf
+	vim $SPARK_HOME/conf/spark-defaults.conf , and add below line:
+	spark.master    yarn
+	
+	Set hadoop conf dir variable in spark
+	mv $SPARK_HOME/conf/spark-env.sh.template $SPARK_HOME/conf/spark-env.sh
+	
+		
+3. Memory allocation for spark-2. Defaults in $SPARK_HOME/conf/spark-defaults.conf
+	Default driver node memory allocation (total must be less than YARN max): spark.driver.memory and spark.driver.memoryOverhead
+	Default executor node memory allocation (total must be less than YARN max): spark.executor.memory and spark.executor.memoryOverhead
+	Used 5g for all for starters
+	
+3.1 For YARN to map executor cores in Spark to vcores while creating containers, change the default capacity scheduler in YARN capacity-scheduler.xml
+	<property>
+        <name>yarn.scheduler.capacity.resource-calculator</name>
+        <!--value>org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator</value-->
+        <value>org.apache.hadoop.yarn.util.resource.DominantResourceCalculator</value>
+    </property>
+
+4.  Enable monitoring: Logs to HDFS and configure history server
+	In $SPARK_HOME/conf/spark-defaults.conf, add following options:
+	
+	spark.eventLog.enabled  			true
+	spark.eventLog.dir 					hdfs://10.0.0.1:9000/spark-logs
+	
+	spark.history.provider            	org.apache.spark.deploy.history.FsHistoryProvider
+	spark.history.fs.logDirectory     	hdfs://10.0.0.1:9000/spark-logs
+	spark.history.fs.update.interval  	10s
+	spark.history.ui.port             	18080
+	
+	spark.master                            yarn
+	spark.driver.memory                     10g
+	spark.driver.memoryOverhead        		50g
+	spark.executor.memory                   50g
+	spark.executor.memoryOverhead      		50g
+
+	spark.eventLog.enabled                  true
+	spark.eventLog.dir                      hdfs://10.0.0.1:9000/spark-logs
+	spark.history.provider                  org.apache.spark.deploy.history.FsHistoryProvider
+	spark.history.fs.logDirectory           hdfs://10.0.0.1:9000/spark-logs
+	spark.history.fs.update.interval        10s
+	spark.history.ui.port                   18080
+
+	
+5. Upload Spark Jars to hdfs for YARN to get access to them and distribute easily
+	https://stackoverflow.com/questions/41112801/property-spark-yarn-jars-how-to-deal-with-it
+	hdfs dfs -put $SPARK_HOME/jars/* /spark/jars/
+	vim $SPARK_HOME/conf/spark-defaults.conf
+	spark.yarn.jars                         hdfs://10.0.0.1:9000/spark/jars/*
+
+6. Try spark submit
+	spark-submit --class PowerMeasurements.SortLegacy "${SRC_DIR_FULL_PATH}/target/scala-2.11/sparksort_2.11-0.1.jar" \
+        yarn "/user/ayelam/sort_inputs/${SIZE_IN_MB}mb.input" "/user/ayelam/sort_outputs/${SIZE_IN_MB}mb.output" \
+        "/user/ayelam/sort_stats/${SIZE_IN_MB}mb.stats" > ${RESULTS_DIR_FULL_PATH}/spark.log 2>&1
+	
+	/usr/local/home/hadoop/spark/bin/spark-submit --class PowerMeasurements.SortLegacy target/scala-2.11/sparksort_2.11-0.1.jar yarn /user/ayelam/1000mb.input /user/ayelam/10001mb.output /user/ayelam/taskstats_${unixstamp}
+
+7. To setup external shuffle services
+	Main article: https://spark.apache.org/docs/latest/running-on-yarn.html#configuring-the-external-shuffle-service
+	a. Set YARN classpath to point to the jar file at spark/yarn/spark-2.3.2-yarn-shuffle.jar. Make sure this jar is present on all nodes, I copied it to hadoop/share/hadoop/yarn folder
+		that is already in the classpath.
+
+	b. Add Spark_Shufle as one of the auxiliary yarn services, and point to the class
+		<property>
+			<name>yarn.nodemanager.aux-services</name>
+			<value>mapreduce_shuffle,spark_shuffle</value>
+        </property>
+
+        <property>
+			<name>yarn.nodemanager.aux-services.spark_shuffle.class</name>
+			<value>org.apache.spark.network.yarn.YarnShuffleService</value>
+        </property>
+
+	c. Turn on using external shuffle in spark-defaults.sh
+		spark.shuffle.service.enabled           true
+
+
+========== Additional Workload Specific Customizations for HDFS or SPARK
+
+1. Created a "tmpfs" RAM disk at /mnt/ramdisk with 30G on all nodes, and pointed Spark scratch space to use it. 
+How: In YARN mode, "yarn.nodemanager.local-dirs" property controls the spark scratch space.  
+Why: To avoid writing large Shuffle intermediate (map) outputs to disk
+NOTE: When using linux secure containers on yarn, the folder must be owned by hadoop user
+	sudo chown hadoop /mnt/ramdisk
+
+2. Created cache pool for HDFS with 64GB of max memory, to cache input spark files.
+How: HDFS Read Caching feature
+Why: So that Spark doesn't have to read from disk when loading the input file into an RDD
+
+3. Used custom number of executors and cores-per-executor while submitting spark job.
+How:
+Why:
+
+4. Changing resource calculator of YARN's capacity scheduler from Default to DominantResourceCalculator.
+How: In capacity-scheduler.xml, set "yarn.scheduler.capacity.resource-calculator=org.apache.hadoop.yarn.util.resource.DominantResourceCalculator"
+Why: Apparently the default calculator just takes memory into consideration when calculating number of containers from input configs, and not CPU: the result being 
+	spark.executor.cores or --executor.cores property of spark is not respected.
+
+
+References:
+Hadoop: https://www.linode.com/docs/databases/hadoop/how-to-install-and-set-up-hadoop-cluster/
+Spark: https://www.linode.com/docs/databases/hadoop/install-configure-run-spark-on-top-of-hadoop-yarn-cluster/
+
+
+========================================= INTEGRATING WITH GIRAPH =================================================================
+
+http://giraph.apache.org/quick_start.html
+1. Make sure you can run general map-reduce jobs, as that is what Giraph is built on.
+
+2. Clone Giraph repo from GitHub and compile it for YARN and target Hadoop version
+sudo git clone https://github.com/apache/giraph.git
+  git clone https://github.com/apache/giraph.git
+  cd giraph/
+  export JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk-amd64
+  For PURE YARN: 
+  	mvn -Phadoop_yarn -DskipTests -Dhadoop.version=2.8.5 clean install -Dcheckstyle.skip
+  	(Needed to do a little hack of removing an option from <munge.symbols> in pom.xml for YARN, based on the below link to get compile to work: 
+  	http://mail-archives.apache.org/mod_mbox/giraph-user/201501.mbox/%3C54B17196.4040107@hiro-tan.org%3E)
+  For MapReduce on YARN (we use this): 
+  	mvn -Phadoop_2 clean install -DskipTests -Dcheckstyle.skip
+
+3. At this point, we'll have a Giraph jar file custom built for Hadoop version, and can be executed using "hadoop jar" over MR.
+
+4. Run below command to see options:
+	hadoop jar /usr/local/home/hadoop/giraph/giraph-examples/target/giraph-examples-1.3.0-SNAPSHOT-for-hadoop-2.8.5-jar-with-dependencies.jar org.apache.giraph.GiraphRunner -h
+
+5. The example in the above link (SimpleShortestPathsComputation) failed at first. The jar is not being picked up, so had to copy it to yarn libs folder (ON ALL NODES!)
+	https://stackoverflow.com/questions/29001491/could-not-find-or-load-main-class-org-apache-giraph-yarn-giraphapplicationmaster
+
+6. Test command
+	
+
+Helpful links:
+https://blog.cloudera.com/blog/2014/02/how-to-write-and-run-giraph-jobs-on-hadoop/
+https://yogin16.github.io/2018/04/09/giraph-hadoop-setup/
+
+
+
+======================================== LOADING VARIOUS GRAPH DATASETS IN GIRAPH ==============================================
+
+Graph datasets from various sources need some pre-processing to convert them to acceptable formats for Giraph. This includes using some custom tools (that come along with datasets)
+to convert graphs to an intermediate format, and writing simple input graph parsers in Giraph for consuming the intermediate format. 
+
+========= Facebook's Darwini Datasets "https://fb-public.app.box.com/s/f13axyrxrt00zmc4sn2vz8mid6ykm109"
+	1. Big darwini datasets have graphs broken down into multiple files in gzip format. We need to 'gunzip' each of these into normal text files. 
+		cd darwini-10b-edges/
+		gunzip part-m-*
+	2. Once unzipped, we upload the directory to hdfs 
+		hdfs dfs  -D dfs.replication=2  -put /usr/local/home/ayelam/darwini-5b-edges/  /user/ayelam/graph_inputs/
+		hdfs dfs -setrep 1 /user/ayelam/graph_inputs/darwini-5b-edges				-- To get uniform data placement with 1 replication
+		hdfs dfs -du -h /user/ayelam/graph_inputs/darwini-5b-edges					-- To see size	
+		hdfs cacheadmin -addDirective -path "/user/ayelam/graph_inputs/darwini-5b-edges" -pool cache-pool		-- Cache if necessary
+	3. Use the directory as input to Giraph, Giraph will parse through all the files.
+	4. On Giraph side, I wrote a parser that can parse this graph: org/apache/giraph/io/formats/LongDoubleFloatTextInputFormat.java
+		giraph <...> -vif org.apache.giraph.io.formats.LongDoubleFloatTextInputFormat -vip /user/ayelam/graph_inputs/darwini-5b-edges <...>
+
+
+========= Lab for Web Algorithmics' Datasets "http://law.di.unimi.it/datasets.php"
+	1. Graphs are compressed with WebGraph tool (http://webgraph.di.unimi.it/) in 'it.unimi.dsi.webgraph.BVGraph' format.  
+	2. To get webgraph running: I downloaded webgraph-<version>.jar from maven and the dependencies tarball from the above website, and added the jar to dependencies folder.
+		And I run web-graph like so: java -cp .\webgraph-deps\* it.unimi.dsi.big.webgraph.BVGraph -o -O -L .\twitter-2010
+	3. In this case, we convert the graphs downloaded from LAW website from BVGraph to ASCIIGraph format, that outputs .graph-txt file.
+		java -cp .\webgraph-deps\* it.unimi.dsi.big.webgraph.Transform identity .\twitter\twitter-2010 twitter-out1 -d it.unimi.dsi.big.webgraph.ASCIIGraph
+	4. Remove the first line (number of nodes) and prepend every line with the vertext number (i.e., line number - 1)
+		tail -n +2 twitter.graph-txt > twitter.graph-txt1
+		nl --starting-line-number=0 twitter.graph-txt1 > twitter.graph-txt 
+		
+	5. Copy this file over to hdfs (See example commands in step 2 above).
+	6. On Giraph side, use the same parser as above. (org/apache/giraph/io/formats/LongDoubleFloatTextInputFormat.java)
+
+
+
+========================================= OTHER SOFTWARE INSTALLED ON NODES =====================================================
+	
+1. Installed sysstat on all nodes to use `sar`
+	sudo apt-get install sysstat
+
+2. 
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
