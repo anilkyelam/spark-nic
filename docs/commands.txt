@@ -1,6 +1,23 @@
 
 
 ## Spark Setup on spark nodes
-1. Setup JAVA
+- Setup JAVA
     sudo apt-get update
     sudo apt-get install openjdk-8-jdk
+- Setup network between machines. See `tools/p2p_setup.sh` for direct connection.
+- Download and build spark. 
+    ./build/mvn -Pyarn -Dhadoop.version=2.8.5 -DskipTests clean package
+- Using Hadoop 2.8.5. Download and unpack it.
+- Follow steps at `docs/setup.txt` for previous spark experience.
+    - HDFS Commands: 
+        start-dfs.sh
+        stop-dfs.sh
+        hdfs dfsadmin -report
+        Web UI at: http://spark-29.sysnet.ucsd.edu:50070
+    - YARN commands: 
+        start-yarn.sh
+        stop-yarn.sh
+	    yarn node -list
+	    yarn application -list
+	    Web UI at http://spark-29.sysnet.ucsd.edu:8088
+

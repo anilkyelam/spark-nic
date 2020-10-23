@@ -1,5 +1,11 @@
 
 
-# Exlcude hadoop package
-hadoop/**
+# Exlcude hadoop package except config files
+hadoop/*
 !hadoop/readme
+!hadoop/etc
+hadoop/etc/*
+!hadoop/etc/hadoop
+hadoop/etc/hadoop/*
+!hadoop/etc/hadoop/*.xml
+
