@@ -17,5 +17,40 @@
 <!-- Put site-specific property overrides in this file. -->
 
 <configuration>
+  <property>
+      <name>dfs.permissions.enabled</name>
+      <value>false</value>
+  </property>
 
+  <property>
+      <name>dfs.namenode.name.dir</name>
+      <value>/home/ayelam/spark-nic/hadoop/data/nameNode</value> 
+  </property>
+
+  <!-- Use a local folder path for data node storage -->
+  <property>
+      <name>dfs.datanode.data.dir</name>
+      <value>/usr/local/home/ayelam/hadoop/data/dataNode</value>
+  </property>
+
+  <property>
+      <name>dfs.replication</name>
+      <value>1</value>
+  </property>
+
+  <property>
+      <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+      <value>false</value>
+  </property>
+
+  <!-- What is this for? -->
+  <!-- <property>
+    <name>dfs.datanode.max.locked.memory</name>
+    <value>64000000000</value>
+  </property> -->
+
+  <property>
+    <name>hadoop.tmp.dir</name>
+    <value>/mnt/ramdisk/</value>
+  </property>
 </configuration>

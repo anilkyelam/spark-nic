@@ -1,4 +1,6 @@
 
+# Spark logs
+tmp/*
 
 # Exlcude hadoop package except config files
 hadoop/*
@@ -8,4 +10,7 @@ hadoop/etc/*
 !hadoop/etc/hadoop
 hadoop/etc/hadoop/*
 !hadoop/etc/hadoop/*.xml
+
+# Scala
+**/target/*
 
