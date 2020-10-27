@@ -43,11 +43,12 @@
       <value>false</value>
   </property>
 
-  <!-- What is this for? -->
-  <!-- <property>
+  <!-- For HDFS caching: https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/CentralizedCacheManagement.html#OS_Limits -->
+  <!-- Max of 30GB RAM for HDFS caching; We need to increase ulimit -l -->
+  <property>
     <name>dfs.datanode.max.locked.memory</name>
-    <value>64000000000</value>
-  </property> -->
+    <value>15000000000</value>
+  </property>
 
   <property>
     <name>hadoop.tmp.dir</name>

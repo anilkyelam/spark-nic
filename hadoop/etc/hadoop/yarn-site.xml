@@ -22,7 +22,7 @@
 
   <property>
       <name>yarn.resourcemanager.hostname</name>
-      <value>10.0.1.1</value>
+      <value>spark-29.sysnet.ucsd.edu</value>
   </property>
 
   <property>

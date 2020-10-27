@@ -18,6 +18,6 @@
 <configuration>        
   <property>
     <name>fs.default.name</name>
-    <value>hdfs://10.0.1.1:9000</value>
+    <value>hdfs://spark-29.sysnet.ucsd.edu:9000</value>
   </property>
 </configuration>

@@ -30,6 +30,11 @@
 - Edit build.sbt in target application to use proper local version 
     - Add local maven as one of the resolvers
     - "resolvers += Resolver.mavenLocal"
-- 
+
+
+## Adding a new node checklist
+- create and mount ramdisk thru /etc/fstab file
+- increase memory locked size in /etc/security/limits.conf
+- edits /etc/sudoers for automatic sudo permissions
 
 
