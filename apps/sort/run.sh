@@ -12,6 +12,8 @@ CACHE=1         # Cache file on HDFS
 SCRIPT_DIR=$(dirname "$0")
 bash ${SCRIPT_DIR}/prepare.sh ${SIZE} ${CACHE}
 
+# Start Spark webserver
+bash ${SPARK_HOME}/sbin/start-history-server.sh
 
 # Run
 CLASS=SortNoDisk
