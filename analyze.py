@@ -25,10 +25,20 @@ class Record:
     addrv = None
 
 def main():
-    appid = "application_1604303541584_0001"
+    # Parse and validate args
+    parser = argparse.ArgumentParser("Analyze spark logs")
+    parser.add_argument('-i', '--expname', action='store', help='Name of the experiment run, used to look for data under out/<expname>', required=True)
+    args = parser.parse_args()
+        
+    expdir = os.path.join("out", args.expname)
+    datadir = os.path.join(expdir, "data")
+    if not os.path.exists(datadir):
+        print("ERROR. Data not found at {0}".format(expdir))
+        return -1
 
     # Get all data
-    files = "tmp/logs/saved/{0}/container*/stdout".format(appid)
+    datadir = os.path.abspath(datadir)
+    files = "{0}/container*/stdout".format(datadir)
     records = []
     for filename in glob.glob(files):
         with open(filename, 'r') as file:                                                                                                                                                                                                                                             
@@ -44,24 +54,27 @@ def main():
                     records.append(r)
                     # print(vals)
                     # print(mapId, recordId, base, base1, base2)
-        print(len(records))
+        # print(len(records))
 
     # Map tasks
-    print(set([r.mapid for r in records]))
+    maps = set([r.mapid for r in records])
+    print(maps)
 
     # Save them for plotting
-    outfile = "tmp.csv"
-    prev_addr = None
-    with open(os.path.join("", outfile), 'w') as csvfile:
-        first = True
-        for r in [r for r in records if r.mapid == 80]:
-            if first:
-                fieldnames = ["idx", "address", "addressk", "addressv", "offset1", "offset2","offset3"]
-                writer = csv.writer(csvfile)
-                writer.writerow(fieldnames)
-                first = False
-            writer.writerow([r.idx, r.addr, r.addrk, r.addrv, r.addrk-r.addr, r.addrv-r.addr, 0 if prev_addr is None else r.addr - prev_addr])
-            prev_addr = r.addr
+    for mapId in maps:
+        datafile = "memdata{0}.csv".format(mapId)
+        outfile = os.path.join(expdir, datafile)
+        prev_addr = None
+        with open(os.path.join("", outfile), 'w') as csvfile:
+            first = True
+            for r in [r for r in records if r.mapid == mapId]:
+                if first:
+                    fieldnames = ["idx", "address", "addressk", "addressv", "offsetk", "offsetv","offset"]
+                    writer = csv.writer(csvfile)
+                    writer.writerow(fieldnames)
+                    first = False
+                writer.writerow([r.idx, r.addr, r.addrk, r.addrv, r.addrk-r.addr, r.addrv-r.addr, 0 if prev_addr is None else r.addr - prev_addr])
+                prev_addr = r.addr
     
 
 if __name__ == "__main__":

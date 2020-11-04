@@ -54,4 +54,9 @@
     <name>hadoop.tmp.dir</name>
     <value>/mnt/ramdisk/</value>
   </property>
+
+  <property>
+    <name>dfs.block.size</name>
+    <value>33554432</value>
+  </property>
 </configuration>

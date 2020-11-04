@@ -20,3 +20,7 @@ hadoop/etc/hadoop/*
 # Scala
 **/target/*
 
+# Ignore large data
+out/**/data/*
+spark.log
+
