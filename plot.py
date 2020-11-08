@@ -321,16 +321,14 @@ def main():
     dyc=(args.dfileycol is not None)
     dandyc=(args.datafile is not None or args.ycol is not None)
     if (dyc and dandyc) or not (dyc or dandyc):
-        print("Use either the (-dyc) or the (-d and -yc) approach - atleast one, and not both!")
-        return -1
+        parser.error("Use either the (-dyc) or the (-d and -yc) approach - atleast one, and not both!")
 
     if (args.datafile or args.ycol) and \
         (args.datafile and len(args.datafile) > 1) and \
         (args.ycol and len(args.ycol) > 1):
-        print("Only one of datafile or ycolumn arguments can provide multiple values. Use -dyc style if this doesn't work for you.")
-        return -1
+        parser.error("Only one of datafile or ycolumn arguments can provide multiple values. Use -dyc style if this doesn't work for you.")
 
-    # Get files, xcols and ycols from args
+    # Infer data files, xcols and ycols from args
     num_plots = 0
     dfile_xcol = None
     dfile_ycol_map = []     #Maintain the input order
@@ -350,18 +348,16 @@ def main():
                 num_plots += 1  
 
     if not args.labelincr and args.plabel and len(args.plabel) != num_plots:
-        print("If plot labels are provided and --labelincr is not, they must be provided for all the plots and are mapped one-to-one in input order")
-        return -1
+        parser.error("If plot labels are provided and --labelincr is not, they must be provided for all the plots and are mapped one-to-one in input order")
     
     if args.labelincr:
         if not args.plabel:
-            print("If --labelincr is specified, plot labels must be specified with -l/--plabel")
-            return -1
-
+            parser.error("If --labelincr is specified, plot labels must be specified with -l/--plabel")
         if len(args.plabel) <= sum(args.labelincr):
-            print("If plot labels and --labelincr are provided, sum of lable increments should not cross the number of plot labels")
-            return -1
+            parser.error("If plot labels and --labelincr are provided, sum of lable increments should not cross the number of plot labels")
     
+    if (args.nohead or args.notail) and args.ptype != PlotType.cdf:
+        parser.error("head and tail trimming is only supported for CDF plots (-z/--ptype: cdf)")
 
     xlabel = args.xlabel if args.xlabel else args.xcol
     ylabel = args.ylabel if args.ylabel else dfile_ycol_map[0][1]
@@ -481,28 +477,31 @@ def main():
         elif args.ptype == PlotType.cdf:
             xc, yc = gen_cdf(df[ycol], 100000)
 
-            head = 0
-            tail = len(xc)
+            # See if head and/or tail needs trimming
+            # NOTE: We don't remove values, instead we limit the axes. This is essentially 
+            # zooming in on a CDF when the head or tail is too long
+            head = None
+            tail = None
             if args.nohead:
                 for i, val in enumerate(yc):
                     if val <= args.nohead/100.0:
-                        head = i
+                        head = xc[i]
+                if head:
+                    args.xmin = head if args.xmin is None else min(head, args.xmin)
             if args.notail:
                 for i, val in enumerate(yc):
                     if val > (100.0 - args.notail)/100.0:
-                        tail = i
+                        tail = xc[i]
                         break
+                if tail:
+                    args.xmax = tail if args.xmax is None else max(tail, args.xmax)
 
-            for i, val in enumerate(yc):
-                if val > 0.99:
-                    idx = i
-                    break
-
-            xc = xc[head:tail]
-            yc = yc[head:tail]
+            # xc = xc[head:tail]
+            # yc = yc[head:tail]
+            
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
-
+            
             if args.nomarker:
                 lns += ax.plot(xc, yc, label=label, color=colors[cidx])
             else:
@@ -521,18 +520,22 @@ def main():
      
         if args.labelincr:
             if args.labelincr[plot_num] == 1:
-                labelidx = (labelidx + 1) 
+                labelidx = (labelidx + 1)
         
 
         plot_num += 1
         if args.ymin:    ax.set_ylim(ymin=args.ymin)
         if args.ymax:    ax.set_ylim(ymax=args.ymax)
         ax.set_ylabel(ylabel)
-    
-    if args.xmin:   axmain.set_xlim(xmin=args.xmin)
-    if args.xmax:   axmain.set_xlim(xmax=args.xmax)
+
+    # print(args.xmin, args.xmax)
+    if args.xmin is not None:   axmain.set_xlim(xmin=args.xmin)
+    if args.xmax is not None:   axmain.set_xlim(xmax=args.xmax)
+
     axmain.set_xlabel(xlabel)
     # axmain.set_ylabel(ylabel)
+    # ax.ticklabel_format(useOffset=False, style='plain')
+
 
     # Set dashes if necessary
     if args.dashed:
@@ -552,11 +555,11 @@ def main():
 
     # Add horizantal and/or vertical lines
     if args.hline:
-        plt.axhline(x=args.hline)
-        plt.text(args.hline, 0, str(args.hline))
+        plt.axhline(y=args.hline, ls='dashed')
+        # plt.text(args.hline, 0, str(args.hline))
     if args.vline:
         plt.axvline(x=args.vline, ls='dashed')
-        plt.text(args.vline, 0, str(args.vline))
+        # plt.text(args.vline, 0, str(args.vline))
 
     # plt.savefig(args.output, format="eps")
     plt.savefig(args.output, format=str(args.outformat))

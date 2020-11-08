@@ -22,5 +22,6 @@ hadoop/etc/hadoop/*
 
 # Ignore large data
 out/**/data/*
+out/**/*.csv
 spark.log
 

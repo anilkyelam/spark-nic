@@ -24,6 +24,19 @@ class Record:
     addrk = None
     addrv = None
 
+
+# check for outliers in a list of numbers
+def find_outliers(array):
+    OUTLIER_THRESHOLD = 4   # standard deviations
+    mean = np.mean(array)
+    std = np.std(array)
+    outliers = []
+    for i, el in enumerate(array):
+        if abs(el - mean) * 1.0 / std > OUTLIER_THRESHOLD:
+            outliers.append(i)
+    return outliers
+
+
 def main():
     # Parse and validate args
     parser = argparse.ArgumentParser("Analyze spark logs")
@@ -48,9 +61,9 @@ def main():
                     r = Record()
                     r.mapid = int(vals[0])
                     r.idx = int(vals[1])
-                    r.addr = int(vals[2], base=16)
-                    r.addrk = int(vals[3], base=16)
-                    r.addrv = int(vals[4], base=16)
+                    r.addr = int(vals[2])
+                    r.addrk = int(vals[3])
+                    r.addrv = int(vals[4])
                     records.append(r)
                     # print(vals)
                     # print(mapId, recordId, base, base1, base2)
@@ -58,16 +71,28 @@ def main():
 
     # Map tasks
     maps = set([r.mapid for r in records])
-    print(maps)
+    print("Available map tasks: " + str(maps))
 
     # Save them for plotting
     for mapId in maps:
         datafile = "memdata{0}.csv".format(mapId)
         outfile = os.path.join(expdir, datafile)
         prev_addr = None
+
+        # Check for outliers
+        records_scoped = [r for r in records if r.mapid == mapId]
+        outliers = find_outliers([r.addr for r in records_scoped])
+        outliers += find_outliers([r.addrk for r in records_scoped])
+        outliers += find_outliers([r.addrv for r in records_scoped])
+        # print([(i, records[i].addr, records[i].addrk, records[i].addrv) for i in set(outliers)])
+        outlier_records = [records_scoped[i] for i in set(outliers)]
+        for r in outlier_records:
+            records_scoped.remove(r)
+        print("Removed {0} outliers.".format(len(outlier_records)))
+
         with open(os.path.join("", outfile), 'w') as csvfile:
             first = True
-            for r in [r for r in records if r.mapid == mapId]:
+            for r in records_scoped:
                 if first:
                     fieldnames = ["idx", "address", "addressk", "addressv", "offsetk", "offsetv","offset"]
                     writer = csv.writer(csvfile)
