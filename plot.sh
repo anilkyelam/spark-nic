@@ -20,11 +20,11 @@ idx=${2:-0}
 # python plot.py -z scatter -d $dir/memdata${idx}.csv -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed1.png -t "Memory layout" --xmin 10000 --xmax 11000 --ymin 2.38e10 --ymax 2.42e10
 # python plot.py -z scatter -d $dir/memdata${idx}.csv -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed2.png -t "Memory layout" --xmin 10000 --xmax 10100 --ymin 2.38e10 --ymax 2.40e10
 # python plot.py -z scatter -d $dir/memdata${idx}.csv -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed3.png -t "Memory layout" --xmin 10000 --xmax 10100 --ymin 2.3947e10 --ymax 2.3949e10
-python plot.py -z scatter -d $dir/memdata${idx}.csv -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed4.png -t "Memory layout" --ymin 2.394700e10 --ymax 2.394705e10
+# python plot.py -z scatter -d $dir/memdata${idx}.csv -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed4.png -t "Memory layout" --ymin 2.394700e10 --ymax 2.394705e10
 # display $plotdir/layout-zoomed1.png &
 # display $plotdir/layout-zoomed2.png &
 # display $plotdir/layout-zoomed3.png &
-display $plotdir/layout-zoomed4.png &
+# display $plotdir/layout-zoomed4.png &
 # python plot.py -z cdf -d $dir/memdata${idx}.csv -yc "address" -xl "Address (Bytes)" -of png -o $plotdir/layout-cdf.png -nm -t "Memory layout CDF"
 # display $plotdir/layout-cdf.png &
 
@@ -34,5 +34,9 @@ display $plotdir/layout-zoomed4.png &
 # python plot.py -z cdf -d $dir/memdata${idx}.csv -yc "offsetv" -xl "Offset (Bytes)" -of png -o $plotdir/valoffset.png -nm -t "Root Object and Value Offset" -nt 0.1 --xmin 0 --xmax 100
 # display $plotdir/valoffset.png &
 
-# python plot.py -z cdf -d $dir/memdata${idx}.csv -yc "offset" -xl "Offset (Bytes)" -of png -o $plotdir/recoffset.png -nm -t "Offset b/w consecutive objects" -nt 0.2 --xmin 0 --hline 1
+# python plot.py -z cdf -d $dir/memdata${idx}.csv -yc "offset" -xl "Offset (Bytes)" -of png -o $plotdir/recoffset.png -nm -t "Offset b/w consecutive objects" -nt 0.2 --xmin 0 --xmax 10000 --hline 1
 # display $plotdir/recoffset.png &
+python plot.py -z cdf -d $dir/memdata${idx}.csv -yc "offset" -xl "Offset (Bytes)" -of png -o $plotdir/recoffset-tail.png -nm -t "Offset b/w consecutive objects" -nh 98 --xmin 7500 --ymin 0.975 --ymax 1.005 --hline 1 --xlog
+display $plotdir/recoffset-tail.png &
+python plot.py -z cdf -d $dir/memdata${idx}.csv -yc "offset" -xl "Offset (Bytes)" -of png -o $plotdir/recoffset-tail2.png -nm -t "Offset b/w consecutive objects" -nh 98 --xmin 7500 --ymin 0.999 --ymax 1.0001 --hline 1 --xlog
+display $plotdir/recoffset-tail2.png &
