@@ -99,7 +99,7 @@ if [[ $SAVE ]]; then
     cp -r ${sparklogs}/* ${RUNDIR}/data/
 
     if [[ $DESC ]]; then    echo "$DESC" > ${RUNDIR}/desc;   fi         # save description
-    cp ${SPARK_HOME}/etc/conf/spark-defaults.conf ${RUNDIR}/            # save spark conf for the run
+    cp ${SPARK_HOME}/conf/spark-defaults.conf ${RUNDIR}/            # save spark conf for the run
     echo "Copied logs at: ${RUNDIR}/"
 fi
 
