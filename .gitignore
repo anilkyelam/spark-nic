@@ -8,6 +8,7 @@ hadoop/*
 !hadoop/setup.sh
 !hadoop/clean.sh
 !hadoop/p2p_setup.sh
+!hadoop/iptables.sh
 !hadoop/hosts
 
 !hadoop/etc
@@ -19,6 +20,11 @@ hadoop/etc/hadoop/*
 
 # Scala
 **/target/*
+.metals/
+.bloop/
+.ammonite/
+metals.sbt
+
 
 # Ignore large data
 out/**/data/*

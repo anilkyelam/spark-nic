@@ -197,14 +197,16 @@ def parse_args():
         help='Custom y-axis upper limit')
 
     parser.add_argument('-hl', '--hline', 
-        action='store', 
+        action='append', 
         type=float,
-        help='Add a horizantal line at specified y-value')
+        dest='hlines',
+        help='Add a horizantal line at specified y-value (multiple lines are allowed)')
 
     parser.add_argument('-vl', '--vline', 
-        action='store', 
+        action='append', 
         type=float,
-        help='Add a vertical line at specified x-value')
+        dest='vlines',
+        help='Add a vertical line at specified x-value (multiple lines are allowed)')
 
     parser.add_argument('-pg', '--pgroup', 
         action='append', 
@@ -375,7 +377,7 @@ def main():
     matplotlib.rc('figure', autolayout=True)
     matplotlib.rcParams['pdf.fonttype'] = 42        # required for latex embedded figures
 
-    fig, axmain = plt.subplots(1, 1, figsize=(8,5))
+    fig, axmain = plt.subplots(1, 1, figsize=(6,4))
     fig.suptitle(args.ptitle if args.ptitle else '')
     #plt.ylim(0, 1000)
 
@@ -431,23 +433,18 @@ def main():
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
             if args.xstr:   xc = [str(x) for x in xc]
-
-            if args.nomarker:
-                lns += ax.plot(xc, yc, label=label, color=colors[cidx])
-            else:
-                lns += ax.plot(xc, yc, label=label, color=colors[cidx], 
-                    marker=markers[midx],markerfacecolor=colors[cidx])
+            lns += ax.plot(xc, yc, label=label, color=colors[cidx], 
+                marker=None if args.nomarker else markers[midx],
+                markerfacecolor=None if args.nomarker else colors[cidx])
 
         elif args.ptype == PlotType.scatter:
             xc = xcol
             yc = df[ycol]
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
-
-            if args.nomarker:
-                ax.scatter(xc, yc, label=label, color=colors[cidx])
-            else:
-                ax.scatter(xc, yc, label=label, color=colors[cidx], marker=markers[midx])
+            ax.scatter(xc, yc, label=label, color=colors[cidx], 
+                marker=None if args.nomarker else markers[midx],
+                markerfacecolor=None if args.nomarker else colors[cidx])
 
         elif args.ptype == PlotType.bar:
             xc = xcol
@@ -457,8 +454,7 @@ def main():
             if args.xstr:   xc = [str(x) for x in xc]
             ax.bar(xc, yc, label=label, color=colors[cidx])
             if args.xstr:   ax.set_xticks(xc)
-            if args.xstr:   ax.set_xticklabels(xc, rotation='45')
-            
+            if args.xstr:   ax.set_xticklabels(xc, rotation='45')         
 
         elif args.ptype == PlotType.barstacked:
             xc = xcol
@@ -495,19 +491,17 @@ def main():
                         break
                 if tail:
                     args.xmax = tail if args.xmax is None else max(tail, args.xmax)
-
-            # xc = xc[head:tail]
-            # yc = yc[head:tail]
             
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
-            
-            if args.nomarker:
-                lns += ax.plot(xc, yc, label=label, color=colors[cidx])
-            else:
-                lns += ax.plot(xc, yc, label=label, color=colors[cidx],
-                    marker=markers[midx],markerfacecolor=colors[cidx])
+            lns += ax.plot(xc, yc, label=label, color=colors[cidx],
+                marker=None if args.nomarker else markers[midx],
+                markerfacecolor=None if args.nomarker else colors[cidx])
 
+            # Add a line at mode (TODO: make this a command line option)
+            mode = scstats.mode(xc).mode[0]
+            if not args.vlines:     args.vlines = []
+            args.vlines.append(mode)        
             ylabel = "CDF"
 
         if args.colormarkerincr:
@@ -553,13 +547,17 @@ def main():
         labels = [l.get_label() for l in lns]
         set_axes_legend_loc(axmain, lns, labels, args.lloc)
 
-    # Add horizantal and/or vertical lines
-    if args.hline:
-        plt.axhline(y=args.hline, ls='dashed')
-        # plt.text(args.hline, 0, str(args.hline))
-    if args.vline:
-        plt.axvline(x=args.vline, ls='dashed')
-        # plt.text(args.vline, 0, str(args.vline))
+    # Add any horizantal and/or vertical lines
+    if args.hlines:
+        for hline in args.hlines:
+            plt.axhline(y=hline, ls='dashed')
+            plt.text(0.5, hline, str(hline), transform=axmain.get_yaxis_transform(), 
+                color='black', fontsize='small')
+    if args.vlines:
+        for vline in args.vlines:
+            plt.axvline(x=vline, ls='dashed')
+            plt.text(vline, 0.5, str(vline), transform=axmain.get_xaxis_transform(), 
+                color='black', fontsize='small',rotation=90)
 
     # plt.savefig(args.output, format="eps")
     plt.savefig(args.output, format=str(args.outformat))

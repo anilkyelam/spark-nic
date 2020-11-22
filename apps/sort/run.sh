@@ -4,6 +4,15 @@
 # Run spark sort application
 #
 
+DEFAULT_SORT_SIZE=1000
+usage="\n
+-r, --rebuild \t\t rebuild app source before deploying it\n
+-sz, --size \t\t sort input size. default is $DEFAULT_SORT_SIZE mb\n
+-sv, --save \t\t save this run for future\n
+-n, --name \t\t optional name for this saved run; default based on current time\n
+-d, --desc \t\t optional description for this saved run\n
+-h, --help \t\t this usage information message\n"
+
 # Parse command line arguments
 for i in "$@"
 do
@@ -13,7 +22,7 @@ case $i in
     REBUILD="-r"
     ;;
 
-    -sz=*|--size=*)      # Optional sort data size in MB; Default is 10 GB
+    -sz=*|--size=*)      # Optional sort data size in MB; Default is $DEFAULT_SORT_SIZE mb
     SIZE="${i#*=}"
     ;;
     
@@ -29,9 +38,9 @@ case $i in
     DESC="${i#*=}"
     ;;
 
-    *)                  # unknown option
-    echo "Unkown Option: $i"
-    # echo -e $usage
+    -h | *)             # help or unknown option
+    echo "Unknown Option: $i"
+    echo -e $usage
     exit
     ;;
 esac
@@ -39,8 +48,8 @@ done
 
 # Constants
 SPARKLOG_RELPATH="hadoop/logs/userlogs"
-SIZE=${SIZE:-10000}         # input size, 10 GB
-CACHE="-c"                  # Cache file on HDFS
+SIZE=${SIZE:-`echo $DEFAULT_SORT_SIZE`}     # input size, 1 GB
+CACHE="-c"                                  # Cache file on HDFS
 
 # Check hdfs is running
 hdfs dfsadmin -report  &> /dev/null
@@ -89,8 +98,9 @@ if [[ $SAVE ]]; then
     sparklogs=${REPO_DIR}/${SPARKLOG_RELPATH}/${appname}
     cp -r ${sparklogs}/* ${RUNDIR}/data/
 
-    if [[ $DESC ]]; then    echo "$DESC" > ${RUNDIR}/desc;   fi
-    echo "Copied logs at: ${RUNDIR}/data/"
+    if [[ $DESC ]]; then    echo "$DESC" > ${RUNDIR}/desc;   fi         # save description
+    cp ${SPARK_HOME}/etc/conf/spark-defaults.conf ${RUNDIR}/            # save spark conf for the run
+    echo "Copied logs at: ${RUNDIR}/"
 fi
 
 # rm spark.log

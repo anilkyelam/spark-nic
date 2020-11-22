@@ -75,5 +75,6 @@ while IFS= read -r wire; do
     # echo "Adding arp entry on $intf: $remote_ip $remote_mac"
     sudo arp -s $remote_ip $remote_mac
     echo "WIRE $wireid Endpoint IPs: Mine - $ip, Remote - $remote_ip"
+    echo "Ensure that 10.0.$wireid.0/24 is whitelisted in iptables!"
 
 done <<< "$TOPOLOGY"

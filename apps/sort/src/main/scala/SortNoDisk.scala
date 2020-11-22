@@ -53,7 +53,15 @@ object SortNoDisk {
     // taskMetrics.begin()
 
     var text_RDD: RDD[Array[Byte]] = sc.binaryRecords(inputPath,100)
-    var kv_RDD: RDD[(Array[Byte],Array[Byte])] = text_RDD.map(line => (line.slice(0,10), line.slice(10,100)))
+    var kv_RDD: RDD[(Array[Byte],Array[Byte])] = 
+      text_RDD.map(line => {  
+          // (line.slice(0,10), line.slice(10,100))
+          var temp = Array.fill[Byte](450)(0)
+          val x = line.slice(0,10)
+          var temp2 = Array.fill[Byte](50)(0)
+          val y = line.slice(10,100)
+          (x, y)
+        })
     kv_RDD.setName("InputRDD")
 
     text_RDD.unpersist()
