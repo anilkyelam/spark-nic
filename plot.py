@@ -1,3 +1,17 @@
+#
+# Generic Python-based Plotter: Basically a CLI for matplotlib.
+#   Generates various commonly used plot styles with a simple command 
+#   Exposes useful matplotlib parameters/knobs (axes limits, labels, styles, etc) as command line options
+#   Supports easy (command line) specification of data as columns from (multiple) CSV files
+#
+# Run "python plot.py -h" to see what it can do.
+#
+# AUTHOR: Anil Yelam
+# 
+# EXAMPLES:
+# TODO 
+#
+
 import sys
 import os
 import re
@@ -90,22 +104,23 @@ def gen_cdf(npArray, num_bin):
    return x, y
 
 
-# Argument Parser
+# # PLOT ARGUMENTS
 def parse_args():
     parser = argparse.ArgumentParser("Python Generic Plotter: Only accepts CSV files")
 
+    # DATA SPECIFICATION (what do I plot?)
     parser.add_argument('-d', '--datafile', 
         action='append', 
-        help='path to the data file, multiple values are allowed')
+        help='path to the data file. multiple values allowed, one for each curve')
         
     parser.add_argument('-xc', '--xcol', 
         action='store', 
-        help='X column  from csv file. Defaults to row index if not provided.', 
+        help='X column name from csv file. Defaults to row index if not provided.', 
         required=False)
 
     parser.add_argument('-yc', '--ycol', 
         action='append', 
-        help='Y column from csv file, multiple values are allowed')
+        help='Y column name from csv file. multiple values allowed, one for each curve')
 
     parser.add_argument('-dxc', '--dfilexcol', 
         nargs=2,
@@ -113,23 +128,14 @@ def parse_args():
         help='X column  from a specific csv file. Defaults to row index if not provided.', 
         required=False)
 
-    parser.add_argument('-dyc', '--dfileycol',
+    parser.add_argument('-dyc', '--dfileycol',          # (recommended way to specify data)
         nargs=2,
         action='append',
         metavar=('datafile', 'ycol'),
         help='Y column from a specific file that is included with this argument')
 
-    parser.add_argument('-o', '--output', 
-        action='store', 
-        help='path to the output plot png', 
-        default="result.png")
 
-    parser.add_argument('-p', '--print_', 
-        action='store_true', 
-        help='print data (with nicer format) instead of plot', 
-        default=False)
-
-    # plot options
+    # PLOT STYLE
     parser.add_argument('-z', '--ptype', 
         action='store', 
         help='type of the plot. Defaults to line',
@@ -137,9 +143,15 @@ def parse_args():
         choices=list(PlotType), 
         default=PlotType.line)
 
+
+    # PLOT METADATA (say something about the data)
     parser.add_argument('-t', '--ptitle', 
         action='store', 
         help='title of the plot')
+
+    parser.add_argument('-l', '--plabel', 
+        action='append', 
+        help='plot label, can provide one label per ycol or datafile')
 
     parser.add_argument('-xl', '--xlabel', 
         action='store', 
@@ -149,16 +161,23 @@ def parse_args():
         action='store', 
         help='Custom y-axis label')
 
+    parser.add_argument('--xstr', 
+        action='store_true', 
+        help='treat x-values as text, not numeric (applies to a bar plot)',
+        default=False)
+
+    
+    # PLOT ADD-ONS (give it a richer look)
     parser.add_argument('-xm', '--xmul', 
         action='store', 
         type=float,
-        help='Custom x-axis multiplier constant (e.g., to change units)',
+        help='Custom x-axis multiplier constant (e.g., for unit conversion)',
         default=1)
 
     parser.add_argument('-ym', '--ymul', 
         action='store', 
         type=float,
-        help='Custom y-axis multiplier constant (e.g., to change units)',
+        help='Custom y-axis multiplier constant (e.g., for unit conversion)',
         default=1)
 
     parser.add_argument('--xlog', 
@@ -171,121 +190,18 @@ def parse_args():
         help='Plot y-axis on log scale',
         default=False)
 
-    parser.add_argument('--xstr', 
-        action='store_true', 
-        help='Set X-values as string labels (applies to a bar plot)',
-        default=False)
-    
-    parser.add_argument('--xmin', 
-        action='store', 
-        type=float,
-        help='Custom x-axis lower limit')
-
-    parser.add_argument('--ymin', 
-        action='store', 
-        type=float,
-        help='Custom y-axis lower limit')
-
-    parser.add_argument('--xmax', 
-        action='store', 
-        type=float,
-        help='Custom x-axis upper limit')
-
-    parser.add_argument('--ymax', 
-        action='store', 
-        type=float,
-        help='Custom y-axis upper limit')
-
     parser.add_argument('-hl', '--hline', 
         action='append', 
         type=float,
         dest='hlines',
         help='Add a horizantal line at specified y-value (multiple lines are allowed)')
-
+        
     parser.add_argument('-vl', '--vline', 
         action='append', 
         type=float,
         dest='vlines',
         help='Add a vertical line at specified x-value (multiple lines are allowed)')
 
-    parser.add_argument('-pg', '--pgroup', 
-        action='append', 
-        help='plot group, number, can provide one group id per ycol or datafile. Plots with same group id will get single plot attribtes like color, label, etc')
-
-    parser.add_argument('-l', '--plabel', 
-        action='append', 
-        help='plot label, can provide one label per ycol or datafile')
-    
-    parser.add_argument('-ls', '--linestyle', 
-        action='append', 
-        help='line style of the plot of the plot. Can provide one label per ycol or datafile, Defaults to solid',
-        # type=LineStyle, 
-        # choices=list(LineStyle))
-    )
-
-    parser.add_argument('-cmi', '--colormarkerincr', 
-        action='append', 
-        help='whether to move to the next color/marker pair, one per ycol or datafile',
-        type=int
-    )
-
-    parser.add_argument('-li', '--labelincr', 
-        action='append', 
-        help='whether to move to the next label in the list, one per ycol or datafile',
-        type=int
-    )
-
-    parser.add_argument('-nm', '--nomarker',  
-        action='store_true', 
-        help='dont add markers to plots', 
-        default=False)
-
-    parser.add_argument('-nt', '--notail',  
-        action='store', 
-        help='eliminate last x%% tail from CDF. Defaults to 1%%', 
-        nargs='?',
-        type=float,
-        const=0.1)
-
-    parser.add_argument('-nh', '--nohead',  
-        action='store', 
-        help='eliminate first x%% head from CDF. Defaults to 1%%', 
-        nargs='?',
-        type=float,
-        const=1.0)
-
-    parser.add_argument('-dl', '--dashed', 
-        action='store', 
-        nargs='+', 
-        type=int,
-        help='use dashed lines for plots with these set of indexes (index starts at 1)')
-
-    parser.add_argument('-s', '--show',  
-        action='store_true', 
-        help='Display the plot after saving it. Blocks the program.', 
-        default=False)
-    
-    parser.add_argument('-ll', '--lloc', 
-        action='store', 
-        help='Custom legend location',
-        type=LegendLoc, 
-        choices=list(LegendLoc), 
-        default=LegendLoc.best)
-
-    parser.add_argument('-fs', '--fontsize', 
-        action='store', 
-        type=int,
-        help='Font size of plot labels, ticks, etc',
-        default=15)
-
-    parser.add_argument('-of', '--outformat', 
-        action='store', 
-        help='Output file format',
-        type=OutputFormat, 
-        choices=list(OutputFormat), 
-        default=OutputFormat.pdf)
-
-    ## Twin Axis Settings
     parser.add_argument('-tw', '--twin', 
         action='store', 
         type=int,
@@ -308,11 +224,111 @@ def parse_args():
         type=LegendLoc, 
         choices=list(LegendLoc), 
         default=LegendLoc.best)
+    
+    
+    # PLOT COSMETICS (it's all about look and feel)
+    parser.add_argument('-ls', '--linestyle', 
+        action='append', 
+        help='line style of the plot of the plot. Can provide one label per ycol or datafile, defaults to solid',
+        # type=LineStyle, 
+        # choices=list(LineStyle))
+    )
+
+    parser.add_argument('-cmi', '--colormarkerincr', 
+        action='append', 
+        help='whether to move to the next color/marker pair, one per ycol or datafile',
+        type=int
+    )
+
+    parser.add_argument('-li', '--labelincr', 
+        action='append', 
+        help='whether to move to the next label in the list, one per ycol or datafile',
+        type=int
+    )
+
+    parser.add_argument('-nm', '--nomarker',  
+        action='store_true', 
+        help='dont add markers to plots', 
+        default=False)
+    
+    parser.add_argument('-fs', '--fontsize', 
+        action='store', 
+        type=int,
+        help='Font size of plot labels, ticks, etc',
+        default=15)
+    
+    parser.add_argument('-ll', '--lloc', 
+        action='store', 
+        help='Custom legend location',
+        type=LegendLoc, 
+        choices=list(LegendLoc), 
+        default=LegendLoc.best)
+
+
+    # PLOT SCOPING (move around on the cartesian plane)
+    parser.add_argument('--xmin', 
+        action='store', 
+        type=float,
+        help='Custom x-axis lower limit')
+
+    parser.add_argument('--ymin', 
+        action='store', 
+        type=float,
+        help='Custom y-axis lower limit')
+
+    parser.add_argument('--xmax', 
+        action='store', 
+        type=float,
+        help='Custom x-axis upper limit')
+
+    parser.add_argument('--ymax', 
+        action='store', 
+        type=float,
+        help='Custom y-axis upper limit')
+
+    parser.add_argument('-nt', '--notail',  
+        action='store', 
+        help='eliminate last x%% tail from CDF. Defaults to 1%%', 
+        nargs='?',
+        type=float,
+        const=0.1)
+
+    parser.add_argument('-nh', '--nohead',  
+        action='store', 
+        help='eliminate first x%% head from CDF. Defaults to 1%%', 
+        nargs='?',
+        type=float,
+        const=1.0)
+
+
+    # LOGISTICS (boring stuff)
+    parser.add_argument('-o', '--output', 
+        action='store', 
+        help='path to the generated output file (see -of for file format)', 
+        default="result.png")
+    
+    parser.add_argument('-of', '--outformat', 
+        action='store', 
+        help='Output file format',
+        type=OutputFormat, 
+        choices=list(OutputFormat), 
+        default=OutputFormat.pdf)
+
+    parser.add_argument('-p', '--print_', 
+        action='store_true', 
+        help='print data (with nicer format) instead of plot', 
+        default=False)
+
+    parser.add_argument('-s', '--show',  
+        action='store_true', 
+        help='Display the plot after saving it. Blocks the program.', 
+        default=False)
 
     args = parser.parse_args()
     return args
 
 
+# All the messiness starts here!
 def main():
     args = parse_args()
 
@@ -323,7 +339,7 @@ def main():
     dyc=(args.dfileycol is not None)
     dandyc=(args.datafile is not None or args.ycol is not None)
     if (dyc and dandyc) or not (dyc or dandyc):
-        parser.error("Use either the (-dyc) or the (-d and -yc) approach - atleast one, and not both!")
+        parser.error("Use either the (-dyc) or the (-d and -yc) approach exclusively, not both!")
 
     if (args.datafile or args.ycol) and \
         (args.datafile and len(args.datafile) > 1) and \
@@ -421,9 +437,6 @@ def main():
         elif len(args.datafile) == 1:   label = ycol
         else:                           label = datafile
 
-        if args.pgroup:                 gid = args.pgroup[plot_num]
-        else:                           gid = plot_num
-
         if xcol is None:
             xcol = df.index
 
@@ -433,18 +446,18 @@ def main():
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
             if args.xstr:   xc = [str(x) for x in xc]
-            lns += ax.plot(xc, yc, label=label, color=colors[cidx], 
-                marker=None if args.nomarker else markers[midx],
-                markerfacecolor=None if args.nomarker else colors[cidx])
+            lns += ax.plot(xc, yc, label=label, color=colors[cidx])
+                # marker=(None if args.nomarker else markers[midx]),
+                # markerfacecolor=(None if args.nomarker else colors[cidx]))
 
         elif args.ptype == PlotType.scatter:
             xc = xcol
             yc = df[ycol]
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
-            ax.scatter(xc, yc, label=label, color=colors[cidx], 
-                marker=None if args.nomarker else markers[midx],
-                markerfacecolor=None if args.nomarker else colors[cidx])
+            ax.scatter(xc, yc, label=label, color=colors[cidx]) 
+                # marker=(None if args.nomarker else markers[midx],)
+                # markerfacecolor=(None if args.nomarker else colors[cidx]))
 
         elif args.ptype == PlotType.bar:
             xc = xcol
@@ -494,9 +507,9 @@ def main():
             
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
-            lns += ax.plot(xc, yc, label=label, color=colors[cidx],
-                marker=None if args.nomarker else markers[midx],
-                markerfacecolor=None if args.nomarker else colors[cidx])
+            lns += ax.plot(xc, yc, label=label, color=colors[cidx])
+                # marker=(None if args.nomarker else markers[midx],)
+                # markerfacecolor=(None if args.nomarker else colors[cidx]))
 
             # Add a line at mode (TODO: make this a command line option)
             mode = scstats.mode(xc).mode[0]
@@ -529,12 +542,6 @@ def main():
     axmain.set_xlabel(xlabel)
     # axmain.set_ylabel(ylabel)
     # ax.ticklabel_format(useOffset=False, style='plain')
-
-
-    # Set dashes if necessary
-    if args.dashed:
-        for d in args.dashed:
-            lns[d-1].set_dashes([3,1])
 
     if args.linestyle:
         for idx, ls in enumerate(args.linestyle):
