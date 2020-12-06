@@ -24,7 +24,6 @@ hadoop/etc/hadoop/*
 .bloop/
 .ammonite/
 metals.sbt
-**/.metals/
 
 
 # Ignore large data

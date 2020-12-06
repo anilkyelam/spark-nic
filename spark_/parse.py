@@ -1,5 +1,6 @@
 #
-# Analyze results (errors) from Lambda Neighbor Discovery run
+# Parse data from spark log files, clean it 
+# and put it into CSV format for plotting.
 #
 
 import argparse
@@ -26,7 +27,7 @@ class Record:
 
 
 # check for outliers in a list of numbers
-def find_outliers(array):
+def find_outliers(array):  
     OUTLIER_THRESHOLD = 4   # standard deviations
     mean = np.mean(array)
     std = np.std(array)
