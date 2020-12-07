@@ -3,6 +3,8 @@
 # (Hadoop and YARN expose a number of ports publicly, guarding them is important!)
 # This script allows inbound connections only for a limited number of IPs
 #
+# Courtesy of Cindy Moore.
+#
 
 # sudo iptables -S
 sudo iptables -P INPUT ACCEPT

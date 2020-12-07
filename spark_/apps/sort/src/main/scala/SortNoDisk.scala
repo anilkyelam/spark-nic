@@ -52,23 +52,28 @@ object SortNoDisk {
     // val taskMetrics = ch.cern.sparkmeasure.TaskMetrics(spark)
     // taskMetrics.begin()
 
+    Tuple 
+    Key
+    Value
+
+    temp
+    Key
+    temp2
+    Value
+    Tuple
+
     var text_RDD: RDD[Array[Byte]] = sc.binaryRecords(inputPath,100)
     var kv_RDD: RDD[(Array[Byte],Array[Byte])] = 
       text_RDD.map(line => {  
           // (line.slice(0,10), line.slice(10,100))
-          // // var temp = Array.fill[Byte](450)(0)
-          // // val x = line.slice(0,10)
-          // // var temp2 = Array.fill[Byte](50)(0)
-          // // val y = line.slice(10,100)
-          // // (x, y)
           line
+          var temp = Array.fill[Byte](450)(0)
+          val x = line.slice(0,10)
+          var temp2 = Array.fill[Byte](50)(0)
+          val y = line.slice(10,100)
+          (x, y)
         })
-    kv_RDD.setName("InputRDD")
-
-    text_RDD.unpersist()
-    text_RDD=null
-    // kv_RDD.persist()
-
+        
     var sorted = kv_RDD.sortBy(_._1, true)
     sorted.setName("SortedRDD")
     // sorted.persist()
