@@ -1,22 +1,6 @@
 
-# Spark logs
-tmp/*
-
-# Exlcude hadoop package except config files
-hadoop/*
-!hadoop/readme
-!hadoop/setup.sh
-!hadoop/clean.sh
-!hadoop/p2p_setup.sh
-!hadoop/iptables.sh
-!hadoop/hosts
-
-!hadoop/etc
-hadoop/etc/*
-!hadoop/etc/hadoop
-hadoop/etc/hadoop/*
-!hadoop/etc/hadoop/*.xml
-!hadoop/etc/hadoop/slaves
+# Workspace
+**/.vscode/
 
 # Scala
 **/target/*
@@ -26,9 +10,7 @@ hadoop/etc/hadoop/*
 metals.sbt
 **/.metals/
 
-
 # Ignore large data
 out/**/data/*
 out/**/*.csv
-spark.log
 

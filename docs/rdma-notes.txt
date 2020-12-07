@@ -1,0 +1,14 @@
+
+
+Setup
+=====
+- Jumping on Stew's RDMA setup (yak servers connected by Mellanox CX-5 RoCE-enabled NICs)
+- I'm guessing Stew installed the OEFD package: https://www.rdmamojo.com/2014/11/22/working-rdma-using-mellanox-ofed/
+- Verify RDMA setup: https://www.rdmamojo.com/2015/01/24/verify-rdma-working/. Seems to be working! (with proper port numners)
+- Install required libraries:
+    sudo apt-get install libtool autoconf automake build-essential
+    sudo apt-get install ibverbs-utils rdmacm-utils infiniband-diags perftest
+    sudo apt-get install librdmacm-dev libibverbs-dev numactl libnuma-dev
+-
+
+

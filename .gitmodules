@@ -1,3 +1,9 @@
 [submodule "spark"]
 	path = spark_/spark
 	url = https://github.com/anilkyelam/spark
+[submodule "rdma/rdma-example"]
+	path = rdma/learn/rdma-example
+	url = https://github.com/animeshtrivedi/rdma-example
+[submodule "rdma/RDMA-Tutorial"]
+	path = rdma/learn/RDMA-Tutorial
+	url = https://github.com/jcxue/RDMA-Tutorial
