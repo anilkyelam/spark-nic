@@ -4,6 +4,9 @@
 [submodule "rdma/rdma-example"]
 	path = rdma/learn/rdma-example
 	url = https://github.com/animeshtrivedi/rdma-example
-[submodule "rdma/RDMA-Tutorial"]
+[submodule "rdma/learn/rdma_bench"]
+	path = rdma/learn/rdma_bench
+	url = https://github.com/efficient/rdma_bench/
+[submodule "rdma/learn/RDMA-Tutorial"]
 	path = rdma/learn/RDMA-Tutorial
-	url = https://github.com/jcxue/RDMA-Tutorial
+	url = https://github.com/steevenlee/RDMA-Tutorial

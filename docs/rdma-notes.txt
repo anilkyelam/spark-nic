@@ -9,6 +9,11 @@ Setup
     sudo apt-get install libtool autoconf automake build-essential
     sudo apt-get install ibverbs-utils rdmacm-utils infiniband-diags perftest
     sudo apt-get install librdmacm-dev libibverbs-dev numactl libnuma-dev
--
+- rdma_bench required a couple more packages like gflags and memcached.
+    sudo apt-get install memcached libmemcached-dev  libmemcached-tools
+    sudo apt-get install libnuma-dev libgflags-dev 
+
+    
+
 
 
