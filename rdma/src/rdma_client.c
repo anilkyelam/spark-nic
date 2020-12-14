@@ -168,11 +168,13 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
         rdma_error("Failed to request notifications, errno: %d\n", -errno);
         return -errno;
     }
+
+        /* TODO: Get capacity from device */
        /* Now the last step, set up the queue pair (send, recv) queues and their capacity.
          * The capacity here is define statically but this can be probed from the 
      * device. We just use a small number as defined in rdma_common.h */
        bzero(&qp_init_attr, sizeof qp_init_attr);
-       qp_init_attr.cap.max_recv_sge = MAX_SGE; /* Maximum SGE per receive posting */
+       qp_init_attr.cap.max_recv_sge = ib_res.; /* Maximum SGE per receive posting */
        qp_init_attr.cap.max_recv_wr = MAX_WR; /* Maximum receive posting capacity */
        qp_init_attr.cap.max_send_sge = MAX_SGE; /* Maximum SGE per send posting */
        qp_init_attr.cap.max_send_wr = MAX_WR; /* Maximum send posting capacity */
@@ -553,6 +555,15 @@ static double measure_rtt(uint32_t msg_size, int read_or_write){
     rdma_buffer_deregister(buffer1_mr);	
     return sum_cycles * 1e6 / (NUM_TRIALS * CPU_FREQ);
 }
+
+
+/* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
+/* Returns xput in Gbps */
+static double measure_xput(uint32_t msg_size, int num_concur, int read_or_write){
+    // TODO
+    return 0;
+}
+
 
 /* This function disconnects the RDMA connection from the server and cleans up 
  * all the resources.
