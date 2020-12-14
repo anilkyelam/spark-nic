@@ -166,6 +166,7 @@ static int start_rdma_server(struct sockaddr_in *server_addr)
 	printf("Server is listening successfully at: %s , port: %d \n",
 			inet_ntoa(server_addr->sin_addr),
 			ntohs(server_addr->sin_port));
+
 	/* now, we expect a client to connect and generate a RDMA_CM_EVNET_CONNECT_REQUEST 
 	 * We wait (block) on the connection management event channel for 
 	 * the connect event. 
@@ -236,17 +237,17 @@ static int accept_client_connection()
 	debug("Receive buffer pre-posting is successful \n");
 	/* Now we accept the connection. Recall we have not accepted the connection 
 	 * yet because we have to do lots of resource pre-allocation */
-       memset(&conn_param, 0, sizeof(conn_param));
-       /* this tell how many outstanding requests can we handle */
-       conn_param.initiator_depth = 3; /* For this exercise, we put a small number here */
-       /* This tell how many outstanding requests we expect other side to handle */
-       conn_param.responder_resources = 3; /* For this exercise, we put a small number */
-       ret = rdma_accept(cm_client_id, &conn_param);
-       if (ret) {
-	       rdma_error("Failed to accept the connection, errno: %d \n", -errno);
-	       return -errno;
-       }
-       /* We expect an RDMA_CM_EVNET_ESTABLISHED to indicate that the RDMA  
+	memset(&conn_param, 0, sizeof(conn_param));
+	/* this tell how many outstanding requests can we handle */
+	conn_param.initiator_depth = 3; /* For this exercise, we put a small number here */
+	/* This tell how many outstanding requests we expect other side to handle */
+	conn_param.responder_resources = 3; /* For this exercise, we put a small number */
+	ret = rdma_accept(cm_client_id, &conn_param);
+	if (ret) {
+		rdma_error("Failed to accept the connection, errno: %d \n", -errno);
+		return -errno;
+	}
+	/* We expect an RDMA_CM_EVNET_ESTABLISHED to indicate that the RDMA  
 	* connection has been established and everything is fine on both, server 
 	* as well as the client sides.
 	*/

@@ -5,17 +5,17 @@
 #
 
 # Metadata
-SERVER_HOST=yak-00.sysnet.ucsd.edu
-SERVER_INTF=enp4s0
-SERVER_IP=10.0.0.1
-CLIENT_HOST=yak-01.sysnet.ucsd.edu
-CLIENT_INTF=enp129s0
-CLIENT_IP=10.0.0.2
+CLIENT_HOST=yak-00.sysnet.ucsd.edu
+CLIENT_INTF=enp4s0
+CLIENT_IP=10.0.0.1
+SERVER_HOST=yak-01.sysnet.ucsd.edu
+SERVER_INTF=enp129s0
+SERVER_IP=10.0.0.2
 
 
-# Make sure to run this script on server host
-if [[ "$(hostname)" != "$SERVER_HOST" ]]; then
-    echo "ERROR! Current host $(hostname) is not listed as server"
+# Make sure to run this script on client host
+if [[ "$(hostname)" != "$CLIENT_HOST" ]]; then
+    echo "ERROR! Current host $(hostname) is not listed as client"
     exit 1
 fi
 
@@ -51,34 +51,36 @@ function setup_intf {
 }
 
 # NOTE: May wanna enable passwordless sudo for ip, ifconfig, etc on all hosts
-setup_intf "$SERVER_INTF" "$SERVER_IP"
+# setup_intf "$SERVER_INTF" "$SERVER_IP"
+ssh "$SERVER_HOST" "$(typeset -f setup_intf); setup_intf $SERVER_INTF $SERVER_IP" -S
 ssh "$CLIENT_HOST" "$(typeset -f setup_intf); setup_intf $CLIENT_INTF $CLIENT_IP" -S
 echo "Interfaces set up!"
 
 
 # Test RDMA connection
 echo "Testing RDMA connection"
-# git submodule init      # so that rdma-example repo is present
 
 # Use rdma-example repo
-REPO_PATH=$(realpath learn/rdma-example/)
-pushd ${REPO_PATH}
+CUR_PATH=`realpath $0`
+DIR=$(dirname $CUR_PATH)
+pushd ${DIR}
 cmake .
 make clean
 make
+popd
 
-# Setup server
-SERVER_PORT=20886
-pkill rdma_server
+# Setup server on server host (assuming same path on the other machine)
 echo "Starting server"
-${REPO_PATH}/bin/rdma_server -p $SERVER_PORT &
+SERVER_PORT=20886
+ssh "$SERVER_HOST" "pkill rdma_server"
+ssh "$SERVER_HOST" "nohup ${DIR}/bin/rdma_server -p $SERVER_PORT &> /dev/null &"
+if [[ $? -ne 0 ]]; then 
+    echo "ERROR! Setting up RDMA server failed!";
+fi
 sleep 1
 
-# Run client on the client host (assuming same path on the other server)
+# Run client on the client host 
 echo "Running client"
-ssh "$CLIENT_HOST" "${REPO_PATH}/bin/rdma_client -a ${SERVER_IP} -p ${SERVER_PORT} -s teststring"
+${DIR}/bin/rdma_client -a ${SERVER_IP} -p ${SERVER_PORT} --simple
 if [[ $? -ne 0 ]]; then     echo "ERROR! RDMA CONNECTION UNSUCCESFUL!";
 else                        echo "RDMA CONNECTION SUCCESFUL!";    fi
-
-# Kill background processes
-pkill rdma_server

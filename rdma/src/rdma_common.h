@@ -31,7 +31,7 @@
 	fprintf(stderr, "%s : %d : ERROR : "msg, __FILE__, __LINE__, ## args);\
 }while(0);
 
-#define ACN_RDMA_DEBUG
+// #define ACN_RDMA_DEBUG
 #ifdef ACN_RDMA_DEBUG 
 /* Debug Macro */
 #define debug(msg, args...) do {\
@@ -69,6 +69,7 @@ struct __attribute((packed)) rdma_buffer_attr {
 	  uint32_t remote_stag;
   }stag;
 };
+
 /* resolves a given destination name to sin_addr */
 int get_addr(char *dst, struct sockaddr *addr);
 
