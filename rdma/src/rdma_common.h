@@ -44,12 +44,27 @@
 
 #endif /* ACN_RDMA_DEBUG */
 
-/* Capacity of the completion queue (CQ) */
-#define CQ_CAPACITY (16)
-/* MAX SGE capacity */
+
+/* The following numbers are specific to YAK machines and 
+ * associated MLNX CX-5 RDMA NICs */
+
+/* CPU freq on yak-00; may be different on other machines 
+ * (TIP: Turn off frequency scaling) */
+#define CPU_FREQ (2.5e9)
+
+/* MAX work requests (limited by "max_qp_wr" dev attr ) */
+#define MAX_WR (256)
+
+/* Capacity of the completion queue (CQ) (limited by "max_cqe" dev attr) */
+#define CQ_CAPACITY (2*MAX_WR)
+
+/* MAX SGE capacity (limited by "max_sge" dev attr) */
 #define MAX_SGE (2)
-/* MAX work requests */
-#define MAX_WR (8)
+
+/* MAX outstnading READ/ATOMIC ops 
+ * (limited by "max_qp_init_rd_atom" and "max_qp_rd_atom" device attrs) */
+#define MAX_RD_AT_IN_FLIGHT (16)
+
 /* Default port where the RDMA server is listening */
 #define DEFAULT_RDMA_PORT (20886)
 

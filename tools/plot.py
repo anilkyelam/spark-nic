@@ -66,15 +66,15 @@ class LegendLoc(Enum):
     def __str__(self):
         return self.value
 
-def set_axes_legend_loc(ax, lns, labels, loc):
+def set_axes_legend_loc(ax, lns, labels, loc, title=None):
     if loc == LegendLoc.none:
         return
     if loc in (LegendLoc.best, LegendLoc.rightin, LegendLoc.center, LegendLoc.topleft):
-        ax.legend(lns, labels, loc=loc.matplotlib_loc(), ncol=1, fancybox=True, shadow=True)
+        ax.legend(lns, labels, loc=loc.matplotlib_loc(), ncol=1, fancybox=True, shadow=True, title=title)
     if loc == LegendLoc.topout:
-        ax.legend(lns, labels, loc=loc.matplotlib_loc(), bbox_to_anchor=(0.5, 1.05), ncol=3, fancybox=True, shadow=True)
+        ax.legend(lns, labels, loc=loc.matplotlib_loc(), bbox_to_anchor=(0.5, 1.05), ncol=3, fancybox=True, shadow=True, title=title)
     if loc == LegendLoc.rightout:
-        ax.legend(lns, labels, loc=loc.matplotlib_loc(), bbox_to_anchor=(1, 1), ncol=1, fancybox=True, shadow=True)
+        ax.legend(lns, labels, loc=loc.matplotlib_loc(), bbox_to_anchor=(1, 1), ncol=1, fancybox=True, shadow=True, title=title)
 
 
 class LineStyle(Enum):
@@ -151,7 +151,12 @@ def parse_args():
 
     parser.add_argument('-l', '--plabel', 
         action='append', 
-        help='plot label, can provide one label per ycol or datafile')
+        help='plot label, can provide one label per ycol or datafile (goes into legend)')
+    
+    parser.add_argument('-lt', '--ltitle', 
+        action='store', 
+        help='title on the plot legend',
+        default=None)
 
     parser.add_argument('-xl', '--xlabel', 
         action='store', 
@@ -446,18 +451,18 @@ def main():
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
             if args.xstr:   xc = [str(x) for x in xc]
-            lns += ax.plot(xc, yc, label=label, color=colors[cidx])
-                # marker=(None if args.nomarker else markers[midx]),
-                # markerfacecolor=(None if args.nomarker else colors[cidx]))
+            lns += ax.plot(xc, yc, label=label, color=colors[cidx],
+                marker=(None if args.nomarker else markers[midx]),
+                markerfacecolor=(None if args.nomarker else colors[cidx]))
 
         elif args.ptype == PlotType.scatter:
             xc = xcol
             yc = df[ycol]
             xc = [x * args.xmul for x in xc]
             yc = [y * ymul for y in yc]
-            ax.scatter(xc, yc, label=label, color=colors[cidx]) 
-                # marker=(None if args.nomarker else markers[midx],)
-                # markerfacecolor=(None if args.nomarker else colors[cidx]))
+            ax.scatter(xc, yc, label=label, color=colors[cidx],
+                marker=(None if args.nomarker else markers[midx]),
+                markerfacecolor=(None if args.nomarker else colors[cidx]))
 
         elif args.ptype == PlotType.bar:
             xc = xcol
@@ -548,11 +553,11 @@ def main():
             lns[idx].set_linestyle(ls)
     
     if args.lloc != LegendLoc.none and args.ptype in [PlotType.bar, PlotType.barstacked, PlotType.hist]:
-        plt.legend(loc=args.lloc.matplotlib_loc())
+        plt.legend(loc=args.lloc.matplotlib_loc(), title=args.ltitle)
     else:
         # TODO: Fix labels for bar plot
         labels = [l.get_label() for l in lns]
-        set_axes_legend_loc(axmain, lns, labels, args.lloc)
+        set_axes_legend_loc(axmain, lns, labels, args.lloc, args.ltitle)
 
     # Add any horizantal and/or vertical lines
     if args.hlines:

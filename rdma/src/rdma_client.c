@@ -16,6 +16,7 @@ static struct ibv_comp_channel *io_completion_channel = NULL;
 static struct ibv_cq *client_cq = NULL;
 static struct ibv_qp_init_attr qp_init_attr;
 static struct ibv_qp *client_qp;
+static struct ibv_device_attr dev_attr;
 /* These are memory buffers related resources */
 static struct ibv_mr *client_metadata_mr = NULL, 
              *client_src_mr = NULL, 
@@ -147,6 +148,15 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
     return -errno;
     }
     debug("completion event channel created at : %p \n", io_completion_channel);
+
+    ret = ibv_query_device(cm_client_id->verbs, &dev_attr);    
+    if (ret) {
+        rdma_error("Failed to get device info, errno: %d\n", -errno);
+        return -errno;
+    }
+    debug("got device info. max qpe: %d, sge: %d, cqe: %d, max rd/at qp depth/outstanding: %d/%d \n", dev_attr.max_qp_wr, 
+        dev_attr.max_sge, dev_attr.max_cqe, dev_attr.max_qp_init_rd_atom, dev_attr.max_qp_rd_atom);
+
     /* Now we create a completion queue (CQ) where actual I/O 
      * completion metadata is placed. The metadata is packed into a structure 
      * called struct ibv_wc (wc = work completion). ibv_wc has detailed 
@@ -154,10 +164,10 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
      * is called "work" ;) 
      */
     client_cq = ibv_create_cq(cm_client_id->verbs /* which device*/, 
-            CQ_CAPACITY /* maximum capacity*/, 
-            NULL /* user context, not used here */,
-            io_completion_channel /* which IO completion channel */, 
-            0 /* signaling vector, not used here*/);
+        CQ_CAPACITY             /* maximum device capacity*/, 
+        NULL                    /* user context, not used here */,
+        io_completion_channel   /* which IO completion channel */, 
+        0                       /* signaling vector, not used here*/);
     if (!client_cq) {
         rdma_error("Failed to create CQ, errno: %d \n", -errno);
         return -errno;
@@ -169,23 +179,20 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
         return -errno;
     }
 
-        /* TODO: Get capacity from device */
-       /* Now the last step, set up the queue pair (send, recv) queues and their capacity.
-         * The capacity here is define statically but this can be probed from the 
-     * device. We just use a small number as defined in rdma_common.h */
-       bzero(&qp_init_attr, sizeof qp_init_attr);
-       qp_init_attr.cap.max_recv_sge = ib_res.; /* Maximum SGE per receive posting */
-       qp_init_attr.cap.max_recv_wr = MAX_WR; /* Maximum receive posting capacity */
-       qp_init_attr.cap.max_send_sge = MAX_SGE; /* Maximum SGE per send posting */
-       qp_init_attr.cap.max_send_wr = MAX_WR; /* Maximum send posting capacity */
-       qp_init_attr.qp_type = IBV_QPT_RC; /* QP type, RC = Reliable connection */
-       /* We use same completion queue, but one can use different queues */
-       qp_init_attr.recv_cq = client_cq; /* Where should I notify for receive completion operations */
-       qp_init_attr.send_cq = client_cq; /* Where should I notify for send completion operations */
-       /*Lets create a QP */
-       ret = rdma_create_qp(cm_client_id /* which connection id */,
-               pd /* which protection domain*/,
-               &qp_init_attr /* Initial attributes */);
+    /* TODO: Get capacity from device */
+    /* Now the last step, set up the queue pair (send, recv) queues and their capacity.
+     * Set capacity to device limits (since we use only one qp and one application) 
+     * This only sets the limits; this will let us play around with the actual numbers */
+    bzero(&qp_init_attr, sizeof qp_init_attr);
+    qp_init_attr.cap.max_recv_sge = MAX_SGE;    /* Maximum SGE per receive posting;*/
+    qp_init_attr.cap.max_recv_wr = MAX_WR;      /* Maximum receive posting capacity; */
+    qp_init_attr.cap.max_send_sge = MAX_SGE;    /* Maximum SGE per send posting;*/
+    qp_init_attr.cap.max_send_wr = MAX_WR;      /* Maximum send posting capacity; */
+    qp_init_attr.qp_type = IBV_QPT_RC;                  /* QP type, RC = Reliable connection */
+    /* We use same completion queue, but one can use different queues */
+    qp_init_attr.recv_cq = client_cq; /* Where should I notify for receive completion operations */
+    qp_init_attr.send_cq = client_cq; /* Where should I notify for send completion operations */
+    ret = rdma_create_qp(cm_client_id, pd, &qp_init_attr);
     if (ret) {
         rdma_error("Failed to create QP, errno: %d \n", -errno);
            return -errno;
@@ -232,8 +239,8 @@ static int client_connect_to_server()
     struct rdma_cm_event *cm_event = NULL;
     int ret = -1;
     bzero(&conn_param, sizeof(conn_param));
-    conn_param.initiator_depth = 3;
-    conn_param.responder_resources = 3;
+    conn_param.initiator_depth = MAX_RD_AT_IN_FLIGHT;
+    conn_param.responder_resources = MAX_RD_AT_IN_FLIGHT;
     conn_param.retry_count = 3; // if fail, then how many times to retry
     ret = rdma_connect(cm_client_id, &conn_param);
     if (ret) {
@@ -400,7 +407,6 @@ static int client_remote_memory_ops()
     debug("Client side WRITE is complete \n");
     start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
     end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
-    double CPU_FREQ = 2.5e9;		// 2.5 GHz, special setting. TODO: magic number.
     printf("Client side WRITE took %lf mu-sec\n", (end_cycles - start_cycles) * 1e6 / CPU_FREQ);
 
     /* Now we prepare a READ using same variables but for destination */
@@ -440,16 +446,16 @@ static int client_remote_memory_ops()
     return 0;
 }
 
+/* List of ops that are being instrumented */
+enum rdma_measured_op { RDMA_READ_OP, RDMA_WRITE_OP };
 
 /* Measures rtt for RDMA READ/WRITE ops for a specified message size, running multiple trials */
 /* Returns RTT in micro-seconds */
-static double measure_rtt(uint32_t msg_size, int read_or_write){
+/* NOTE: This method is now obsolete. RTT can now be calculated as a special case of measure_xput() with num_concur = 1 */
+static double measure_rtt(uint32_t msg_size, enum rdma_measured_op rdma_op) {
     int ret = -1, n;
     struct ibv_wc wc;
     struct timeval start, end;
-    long ops_count = 0;
-    double duration = 0.0;
-    double throughput = 0.0;
     uint64_t start_cycles, end_cycles;
     struct ibv_cq *cq_ptr = NULL;
     void *context = NULL;
@@ -476,14 +482,18 @@ static double measure_rtt(uint32_t msg_size, int read_or_write){
     bzero(&client_send_wr, sizeof(client_send_wr));
     client_send_wr.sg_list = &client_send_sge;
     client_send_wr.num_sge = 1;
-    client_send_wr.opcode = read_or_write ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
+    client_send_wr.opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
     client_send_wr.send_flags = IBV_SEND_SIGNALED;          // NOTE: This tells the other NIC to send completion events
     /* we have to tell server side info for RDMA */
     client_send_wr.wr.rdma.rkey = server_metadata_attr.stag.remote_stag;
     client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address;
 
+    gettimeofday (&start, NULL);
     rdtsc();
+    start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
+
     /* Now we post it */
+    uint64_t wrs_posted = 0, wrs_acked = 0;
     ret = ibv_post_send(client_qp, 
                &client_send_wr,
            &bad_client_send_wr);
@@ -491,6 +501,7 @@ static double measure_rtt(uint32_t msg_size, int read_or_write){
         rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
         return -errno;
     }
+    wrs_posted++;
 
     /* at this point we are expecting 1 work completion for the write */
     /* We wait for the notification on the CQ channel */
@@ -507,9 +518,9 @@ static double measure_rtt(uint32_t msg_size, int read_or_write){
         return -errno;
     }
 
-    const int NUM_TRIALS = 1e6;     // a million
-    int trials = 0;
-    uint64_t sum_cycles = 0;
+    const uint64_t minimum_duration_secs = 5;   /* number of seconds to run the experiment for at least */
+    const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
+    int stop_posting = 0;
     do {
         /* Poll the completion queue for the completion event for the earlier write */
         do {
@@ -519,23 +530,132 @@ static double measure_rtt(uint32_t msg_size, int read_or_write){
                 return ret;     /* ret is errno here */
             }
         } while (n < 1);
+        wrs_acked += n;
 
         /* Check that the write succeeded */
         if (wc.status != IBV_WC_SUCCESS) {
-            rdma_error("Work completion (WC) has error status: %s at index %d",  
-                ibv_wc_status_str(wc.status), 0);
+            rdma_error("Work completion (WC) has error status: %d, %s at index %d",  
+                wc.status, ibv_wc_status_str(wc.status), 0);
             return -(wc.status);       /* return negative value */
         }
-        rdtsc1();
 
-        trials++;
-        start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
-        end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
-        sum_cycles += (end_cycles - start_cycles);
-        if (trials >= NUM_TRIALS)   break;
+        /* Is it time to look at the watch? */
+        if (wrs_posted % check_watch_interval == 0) {   
+            rdtsc1();
+            end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
+            if ((end_cycles - start_cycles) >= minimum_duration_secs * CPU_FREQ) {
+                // we can stop posting
+                stop_posting = 1;
+            }
+        }
 
-        /* Post again */
-        rdtsc();
+        if (!stop_posting) {
+            /* Post again */
+            ret = ibv_post_send(client_qp, 
+                    &client_send_wr,
+                    &bad_client_send_wr);
+            if (ret) {
+                rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
+                return -errno;
+            }
+            wrs_posted++;
+        }
+    } while(wrs_acked < wrs_posted);
+    
+    rdtsc1();
+    end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
+    gettimeofday (&end, NULL);
+
+    /* Similar to connection management events, we need to acknowledge CQ events */
+    ibv_ack_cq_events(cq_ptr, 1 /* we received one event notification. This is not number of WC elements */);
+    
+    // Deregister local MRs
+    rdma_buffer_deregister(buffer1_mr);	
+    
+    // printf("RTT is %lf mu-sec\n", sum_cycles * 1e6 / (NUM_TRIALS * CPU_FREQ));    
+    
+    /* Calculate duration. See if RDTSC timer agrees with regular ctime.
+     * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
+     * but rdtsc is low overhead so we can use that from (roughly) keeping track of time while we use ctime 
+     * to calculate numbers */
+    double duration_rdtsc = (end_cycles - start_cycles) / CPU_FREQ;
+    double duration_ctime = (double)((end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) * 1.0e-6);
+    debug("Duration as measured by RDTSC: %.2lf secs, by ctime: %.2lf secs\n", duration_rdtsc, duration_ctime);
+
+    double rtt = duration_ctime / wrs_acked;
+    debug("RTT = %.2lf micro-secs. Sampled for %.2lf seconds\n", rtt * 1e6, duration_ctime);
+    return rtt * 1e6;
+}
+
+
+/* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
+/* Returns xput in ops/sec */
+static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured_op rdma_op)
+{
+    int ret = -1, n, i;
+    struct ibv_wc* wc;
+    uint64_t start_cycles, end_cycles;
+    struct timeval      start, end;
+    struct ibv_cq *cq_ptr = NULL;
+    void *context = NULL;
+    struct ibv_mr *buffer1_mr = NULL;           /* Make sure to deregister these local MRs before exiting */
+
+    /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
+     * is very less; while there is no such limit for WRITES. The connection parameters initiator_depth
+     * and responder_resources determine such limit, which are again limited by hardware device 
+     * attributes max_qp_rd_atom and max_qp_init_rd_atom. Why is there such a limit?  */
+    /* In any case, for now, disallow request for concurrency more than the limit */
+    if (rdma_op == RDMA_READ_OP && num_concur > MAX_RD_AT_IN_FLIGHT) {
+        rdma_error("Device cannot support more than %d outstnading READs (num_concur=%d)\n", 
+            MAX_RD_AT_IN_FLIGHT, num_concur);
+        return -EOVERFLOW;
+    }
+
+    /* Allocate a client buffer to write from */
+    size_t buf_size = msg_size * num_concur;
+    buffer1_mr = rdma_buffer_alloc(pd,
+        buf_size,
+        (IBV_ACCESS_LOCAL_WRITE | 
+            IBV_ACCESS_REMOTE_WRITE | 
+            IBV_ACCESS_REMOTE_READ));
+    if (!buffer1_mr) {
+        rdma_error("We failed to create the destination buffer, -ENOMEM\n");
+        return -ENOMEM;
+    }
+
+    /* For sanity check, fill the client buffer with different alphabets in each message. 
+     * We can verify this by reading the server buffer later. Only works for RDMA WRITEs though */
+    for (i = 0; i < num_concur; i++)
+        memset(buffer1_mr->addr + (i*msg_size), 'a' + i%26, msg_size);
+
+    // NOTE: May wanna fill the buffer with something other than zeroes
+    /* Make WR for writing this buffer */
+    client_send_sge.addr = (uint64_t) buffer1_mr->addr;
+    client_send_sge.length = (uint32_t) msg_size;           // Send only msg_size
+    client_send_sge.lkey = buffer1_mr->lkey;
+    /* now we link to the send work request */
+    bzero(&client_send_wr, sizeof(client_send_wr));
+    client_send_wr.sg_list = &client_send_sge;
+    client_send_wr.num_sge = 1;
+    client_send_wr.opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
+    client_send_wr.send_flags = IBV_SEND_SIGNALED;          // NOTE: This tells the other NIC to send completion events
+    /* we have to tell server side info for RDMA */
+    client_send_wr.wr.rdma.rkey = server_metadata_attr.stag.remote_stag;
+    client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address;
+
+    gettimeofday (&start, NULL);
+    rdtsc();
+    start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
+
+    /* Post until number of max requests in flight is hit */
+    char *buf_ptr = buffer1_mr->addr;
+    int	buf_offset = 0;
+    uint64_t wr_posted = 0, wr_acked = 0;
+    for (i = 0; i < num_concur; i++) {
+        /* it is safe to reuse client_send_wr for all requests; we just change the local and remote addresses */
+        client_send_wr.wr_id = buf_offset;              /* User-assigned id to recognize this WR on completion */
+        client_send_sge.addr = (uint64_t) buf_ptr; 
+        client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address + buf_offset;
         ret = ibv_post_send(client_qp, 
                 &client_send_wr,
                 &bad_client_send_wr);
@@ -543,25 +663,155 @@ static double measure_rtt(uint32_t msg_size, int read_or_write){
             rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
             return -errno;
         }
-    } while(1);
+        	
+        wr_posted++;
+        buf_offset = (buf_offset + msg_size) % buf_size;
+	    buf_ptr    = buffer1_mr->addr + buf_offset;
+    }
+
+    /* at this point we are expecting work completions for the requests */
+    /* We wait for the notification on the CQ channel */
+    ret = ibv_get_cq_event(io_completion_channel, &cq_ptr, &context);
+    if (ret) {
+        rdma_error("Failed to get next CQ event due to %d \n", -errno);
+        return -errno;
+    }
+
+    /* Request for more notifications. */
+    ret = ibv_req_notify_cq(cq_ptr, 0);
+    if (ret){
+        rdma_error("Failed to request further notifications %d \n", -errno);
+        return -errno;
+    }
+
+    const uint64_t minimum_duration_secs = 10;  /* number of seconds to run the experiment for at least */
+    const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
+    int stop_posting = 0;
+    wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
+    do {
+        /* Poll the completion queue for the completion event for the earlier write */
+        do {
+            n = ibv_poll_cq(cq_ptr, num_concur, wc);       // get upto num_concur entries
+            if (n < 0) {
+                rdma_error("Failed to poll cq for wc due to %d \n", ret);
+                return ret;     /* ret is errno here */
+            }
+        } while (n < 1);
+
+        /* For each completed request */
+        for (i = 0; i < n; i++) {
+            /* Check that it succeeded */
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                rdma_error("Work completion (WC) has error status: %d, %s at index %ld",  
+                    wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+                return -(wc[i].status);       /* return negative value */
+            }
+
+            /* Is it time to look at the watch? */
+            if (wr_posted % check_watch_interval == 0) {   
+                rdtsc1();
+                end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
+                if ((end_cycles - start_cycles) >= minimum_duration_secs * CPU_FREQ) {
+                    // we can stop posting
+                    stop_posting = 1;
+                }
+            }
+
+            if (!stop_posting) {
+                /* Issue another request that reads/writes from same locations as the completed one */
+                buf_offset = wc[i].wr_id;
+                buf_ptr    = buffer1_mr->addr + buf_offset;
+                client_send_wr.wr_id = buf_offset;              /* User-assigned id to recognize this WR on completion */
+                client_send_sge.addr = (uint64_t) buf_ptr; 
+                client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address + buf_offset; 
+                ret = ibv_post_send(client_qp, 
+                        &client_send_wr,
+                        &bad_client_send_wr);
+                if (ret) {
+                    rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
+                    return -errno;
+                }
+                wr_posted++;
+            }
+        }
+
+        /* Stop when all the posted WRs are acked */
+        wr_acked += n;
+    } while(wr_acked < wr_posted);
+    
+    rdtsc1();
+    end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
+    gettimeofday (&end, NULL);
+    debug("WRs posted: %lu, WRs acked: %lu\n", wr_posted, wr_acked);
 
     /* Similar to connection management events, we need to acknowledge CQ events */
     ibv_ack_cq_events(cq_ptr, 1 /* we received one event notification. This is not number of WC elements */);
-
-    double CPU_FREQ = 2.5e9;		// 2.5 GHz, special setting. TODO: magic number.
-    // printf("RTT is %lf mu-sec\n", sum_cycles * 1e6 / (NUM_TRIALS * CPU_FREQ));
     
-    // Deregister local MRs
+
+    /* SANITY CHECK */
+    /* In case of RDMA writes, perform a sanity check by reading the server-side buffer and checking its content */
+    if (rdma_op == RDMA_WRITE_OP) {
+        /* Clear the local buffer and issue a big read */
+        memset(buffer1_mr->addr, 0, num_concur * msg_size); 
+
+        /* Now we prepare a READ using same variables but for destination */
+        client_send_sge.addr = (uint64_t) buffer1_mr->addr;
+        client_send_sge.length = (uint32_t) msg_size * num_concur;           // entire buffer
+        client_send_sge.lkey = buffer1_mr->lkey;
+        /* now we link to the send work request */
+        bzero(&client_send_wr, sizeof(client_send_wr));
+        client_send_wr.sg_list = &client_send_sge;
+        client_send_wr.num_sge = 1;
+        client_send_wr.opcode = IBV_WR_RDMA_READ;
+        client_send_wr.send_flags = IBV_SEND_SIGNALED;
+        /* we have to tell server side info for RDMA */
+        client_send_wr.wr.rdma.rkey = server_metadata_attr.stag.remote_stag;
+        client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address;
+        /* Now we post it */
+        ret = ibv_post_send(client_qp, 
+                &client_send_wr,
+                &bad_client_send_wr);
+        if (ret) {
+            rdma_error("Failed to read client dst buffer from the master, errno: %d \n", -errno);
+            return -errno;
+        }
+        /* at this point we are expecting 1 work completion for the read */
+        ret = process_work_completion_events(io_completion_channel, wc, 1);
+        if(ret != 1 || wc->opcode != IBV_WC_RDMA_READ) {
+            rdma_error("We failed to get 1 work completion for the sanity check read, ret = %d \n",ret);
+            return ret;
+        }
+
+        /* Validate the buffer */
+        char* expected = (char*) malloc(msg_size * sizeof(char));
+        for (i = 0; i < num_concur; i++) {
+            memset(expected, 'a' + i%26, msg_size);
+            if (strncmp(expected, (char*) buffer1_mr->addr + (i*msg_size), msg_size) != 0) {
+                printf("%d\n", strncmp(expected, (char*) buffer1_mr->addr + (i*msg_size), msg_size));
+                rdma_error("Sanity check failed. \nBuffer read from server does not contain expected data at msg index: %d.\n\
+                    Expected: %.*s \n\
+                    Actual: %.*s \n", i+1, msg_size, expected, msg_size, (char*) buffer1_mr->addr + (i*msg_size));
+                return 1;
+            }
+        }
+        debug("SANITY check complete!\n");
+    }
+
+    /* Deregister local MRs */
     rdma_buffer_deregister(buffer1_mr);	
-    return sum_cycles * 1e6 / (NUM_TRIALS * CPU_FREQ);
-}
 
+    /* Calculate duration. See if RDTSC timer agrees with regular ctime.
+     * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
+     * but rdtsc is low overhead so we can use that from (roughly) keeping track of time while we use ctime 
+     * to calculate numbers */
+    double duration_rdtsc = (end_cycles - start_cycles) / CPU_FREQ;
+    double duration_ctime = (double)((end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) * 1.0e-6);
+    printf("Duration as measured by RDTSC: %.2lf secs, by ctime: %.2lf secs\n", duration_rdtsc, duration_ctime);
 
-/* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
-/* Returns xput in Gbps */
-static double measure_xput(uint32_t msg_size, int num_concur, int read_or_write){
-    // TODO
-    return 0;
+    double goodput_pps = wr_acked / duration_ctime;
+    double goodput_bps = goodput_pps * msg_size * 8;
+    printf("Goodput = %.2lf Gbps. Sampled for %.2lf seconds\n", goodput_bps / 1e9, duration_ctime);
+    return goodput_pps;
 }
 
 
@@ -648,15 +898,23 @@ int main(int argc, char **argv) {
     char* dummy_text = "HELLO";
     src = dst = NULL; 
     int simple = 0;
+    int rtt_flag = 0, xput_flag = 0;
+    int num_concur = 1, write_to_file = 0;
+    char outfile[200] ;
 
     /* Parse Command Line Arguments */
     static const struct option options[] = {
         {.name = "simple", .has_arg = no_argument, .val = 's'},
-        {},
+        {.name = "rtt", .has_arg = no_argument, .val = 'r'},
+        {.name = "xput", .has_arg = no_argument, .val = 'x'},
+        {.name = "concur", .has_arg = required_argument, .val = 'c'},
+        {.name = "out", .has_arg = required_argument, .val = 'o'},
+        {}
     };
-    while ((option = getopt_long(argc, argv, "sa:p:", options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "sa:p:rxc:o:", options, NULL)) != -1) {
         switch (option) {
             case 's':
+                /* run the basic example to test connection */
                 simple = 1;
                 src = calloc(strlen(dummy_text) , 1);
                 if (!src) {
@@ -684,6 +942,27 @@ int main(int argc, char **argv) {
                 /* passed port to listen on */
                 server_sockaddr.sin_port = htons(strtol(optarg, NULL, 0)); 
                 break;
+            case 'r':
+                /* Run RTT measurement (for all msg sizes) */
+                rtt_flag = 1;     
+                break;
+            case 'x':
+                /* Run xput measurement (expects concurrency number -c) */
+                xput_flag = 1;
+                break;
+            case 'c':
+                /* concurrency i.e., number of requests in flight */
+                num_concur = strtol(optarg, NULL, 0); 
+                if (num_concur < 1 || num_concur > MAX_WR) {
+                    rdma_error("Invalid num_concur. Should be between 1 and %d\n", MAX_WR);
+                    return -1;
+                }
+                break;  
+            case 'o':
+                /* output file to write to */
+                write_to_file = 1;
+                strcpy(outfile, optarg);
+                break;
             default:
                 usage();
                 break;
@@ -694,6 +973,7 @@ int main(int argc, char **argv) {
         server_sockaddr.sin_port = htons(DEFAULT_RDMA_PORT);
     }
 
+    /* Client-side RDMA setup */
     ret = client_prepare_connection(&server_sockaddr);
     if (ret) { 
         rdma_error("Failed to setup client connection , ret = %d \n", ret);
@@ -710,7 +990,7 @@ int main(int argc, char **argv) {
         return ret;
     }
 
-    /* Connection set up and ready to play */
+    /* Connection now set up and ready to play */
     if (simple) {
         /* If asked for a simple program, run the original example */
         ret = client_xchange_metadata_with_server(src, strlen(src));
@@ -741,11 +1021,67 @@ int main(int argc, char **argv) {
         }
         
         /* Get roundtrip latencies for ops */
-        uint32_t msg_size = 64;
-        printf("RTT for %d B WRITES: %0.2lf mu-secs\n", msg_size, measure_rtt(msg_size, 0));       // WRITE RTT
-        printf("RTT for %d B READS : %0.2lf mu-secs\n", msg_size, measure_rtt(msg_size, 1));       // READ RTT
-        for (msg_size = 10; msg_size <= 3000; msg_size += 10) {
-            printf("%d,%.2lf,%.2lf\n", msg_size, measure_rtt(msg_size, 0), measure_rtt(msg_size, 1));
+        if (rtt_flag) {
+            uint32_t msg_size = 64;
+            // uint32_t max_reqs_in_flight = 1;
+
+            // printf("RTT for %d B WRITES: %0.2lf mu-secs\n", msg_size, measure_rtt(msg_size, RDMA_WRITE_OP));        // WRITE RTT
+            // printf("RTT for %d B READS : %0.2lf mu-secs\n", msg_size, measure_rtt(msg_size, RDMA_READ_OP));         // READ RTT
+
+            /* We can also get them using the xput method with 1 request in flight; results agreed with above method. */
+            // printf("RTT for %d B WRITES: %0.2lf mu-secs\n", msg_size, 1e6 / measure_xput(msg_size, max_reqs_in_flight, RDMA_WRITE_OP) );     // WRITE RTT
+            // printf("RTT for %d B READS : %0.2lf mu-secs\n", msg_size, 1e6 / measure_xput(msg_size, max_reqs_in_flight, RDMA_READ_OP));       // READ RTT
+
+            /* Generate RTT numbers for different msg sizes */
+            FILE *fptr;
+            if (write_to_file) {
+                printf("Writing output to: %s\n", outfile);
+                fptr = fopen(outfile, "w");
+                fprintf(fptr, "msg size,write,read\n");
+            }
+            printf("=========== RTTs =============\n");
+            printf("msg size,write,read\n");
+            for (msg_size = 64; msg_size <= 2560; msg_size += 64) {
+                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP);
+                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP);
+                printf("%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
+                if (write_to_file) {
+                    fprintf(fptr, "%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
+                    fflush(fptr);
+                }
+            }
+            if (write_to_file)  fclose(fptr);
+        }
+
+        /* Get xputs for ops */
+        if (xput_flag) {
+            uint32_t msg_size = 64;
+            // max_reqs_in_flight = 20;
+            // printf("Goodput for %3d B READS (%3d QPE) : %0.2lf gbps\n", msg_size, max_reqs_in_flight, 
+            //     measure_xput(msg_size, max_reqs_in_flight, RDMA_READ_OP) * msg_size * 8 / 1e9);       // READ Xput
+            // printf("Goodput for %3d B WRITES (%3d QPE) : %0.2lf gbps\n", msg_size, max_reqs_in_flight, 
+            //     measure_xput(msg_size, max_reqs_in_flight, RDMA_WRITE_OP) );       // WRITE Xput
+
+            FILE *fptr;
+            if (write_to_file) {
+                printf("Writing output to: %s\n", outfile);
+                fptr = fopen(outfile, "w");
+                fprintf(fptr, "msg size,write_ops,write_gbps,read_ops,read_gbps\n");
+            }
+            printf("=========== Xput =============\n");
+            printf("msg size,write_ops,write,read_ops,read\n");
+            for (msg_size = 64; msg_size <= 4096; msg_size += 64) {
+                double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP);
+                double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? measure_xput(msg_size, num_concur, RDMA_READ_OP) : 0;
+                double wput_gbps = wput_ops * msg_size * 8 / 1e9;
+                double rput_gbps = rput_ops * msg_size * 8 / 1e9;
+                printf("%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, wput_ops, wput_gbps, rput_ops, rput_gbps);
+                if (write_to_file) {
+                    fprintf(fptr, "%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, wput_ops, wput_gbps, rput_ops, rput_gbps);
+                    fflush(fptr);
+                }
+            }
+            if (write_to_file)  fclose(fptr);
         }
     }
 

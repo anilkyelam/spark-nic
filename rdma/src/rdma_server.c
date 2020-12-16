@@ -239,9 +239,9 @@ static int accept_client_connection()
 	 * yet because we have to do lots of resource pre-allocation */
 	memset(&conn_param, 0, sizeof(conn_param));
 	/* this tell how many outstanding requests can we handle */
-	conn_param.initiator_depth = 3; /* For this exercise, we put a small number here */
+	conn_param.initiator_depth = MAX_RD_AT_IN_FLIGHT;
 	/* This tell how many outstanding requests we expect other side to handle */
-	conn_param.responder_resources = 3; /* For this exercise, we put a small number */
+	conn_param.responder_resources = MAX_RD_AT_IN_FLIGHT; 
 	ret = rdma_accept(cm_client_id, &conn_param);
 	if (ret) {
 		rdma_error("Failed to accept the connection, errno: %d \n", -errno);
@@ -326,9 +326,9 @@ static int send_server_metadata_to_client()
 	       return -ENOMEM;
        }
        /* We need to transmit this buffer. So we create a send request. 
-	* A send request consists of multiple SGE elements. In our case, we only
-	* have one 
-	*/
+		* A send request consists of multiple SGE elements. In our case, we only
+		* have one 
+		*/
        server_send_sge.addr = (uint64_t) &server_metadata_attr;
        server_send_sge.length = sizeof(server_metadata_attr);
        server_send_sge.lkey = server_metadata_mr->lkey;

@@ -176,12 +176,12 @@ int process_work_completion_events (struct ibv_comp_channel *comp_channel,
 	       total_wc += ret;
        } while (total_wc < max_wc); 
        debug("%d WC are completed \n", total_wc);
-	   
+
        /* Now we check validity and status of I/O work completions */
        for( i = 0 ; i < total_wc ; i++) {
 	       if (wc[i].status != IBV_WC_SUCCESS) {
-		       rdma_error("Work completion (WC) has error status: %s at index %d", 
-				       ibv_wc_status_str(wc[i].status), i);
+		       rdma_error("Work completion (WC) has error status: %d, %s at index %d", 
+				       wc[i].status, ibv_wc_status_str(wc[i].status), i);
 		       /* return negative value */
 		       return -(wc[i].status);
 	       }
