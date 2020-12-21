@@ -65,6 +65,9 @@
  * (limited by "max_qp_init_rd_atom" and "max_qp_rd_atom" device attrs) */
 #define MAX_RD_AT_IN_FLIGHT (16)
 
+/* MAX memory registrations (limited by device resources, found empiirically for our NIC) */
+#define MAX_MR (16000)
+
 /* Default port where the RDMA server is listening */
 #define DEFAULT_RDMA_PORT (20886)
 

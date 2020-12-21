@@ -448,158 +448,29 @@ static int client_remote_memory_ops()
 
 /* List of ops that are being instrumented */
 enum rdma_measured_op { RDMA_READ_OP, RDMA_WRITE_OP };
-
-/* Measures rtt for RDMA READ/WRITE ops for a specified message size, running multiple trials */
-/* Returns RTT in micro-seconds */
-/* NOTE: This method is now obsolete. RTT can now be calculated as a special case of measure_xput() with num_concur = 1 */
-static double measure_rtt(uint32_t msg_size, enum rdma_measured_op rdma_op) {
-    int ret = -1, n;
-    struct ibv_wc wc;
-    struct timeval start, end;
-    uint64_t start_cycles, end_cycles;
-    struct ibv_cq *cq_ptr = NULL;
-    void *context = NULL;
-    struct ibv_mr *buffer1_mr = NULL;           /* Make sure to deregister these local MRs before exiting */
-
-    /* Allocate a client buffer to write from */
-    uint32_t buf_size = 2 * msg_size;
-    buffer1_mr = rdma_buffer_alloc(pd,
-            buf_size,
-            (IBV_ACCESS_LOCAL_WRITE | 
-             IBV_ACCESS_REMOTE_WRITE | 
-             IBV_ACCESS_REMOTE_READ));
-    if (!buffer1_mr) {
-        rdma_error("We failed to create the destination buffer, -ENOMEM\n");
-        return -ENOMEM;
-    }
-
-    // NOTE: May wanna fill the buffer with something other than zeroes
-    /* Make WR for writing this buffer */
-    client_send_sge.addr = (uint64_t) buffer1_mr->addr;
-    client_send_sge.length = (uint32_t) msg_size;           // Send only msg_size
-    client_send_sge.lkey = buffer1_mr->lkey;
-    /* now we link to the send work request */
-    bzero(&client_send_wr, sizeof(client_send_wr));
-    client_send_wr.sg_list = &client_send_sge;
-    client_send_wr.num_sge = 1;
-    client_send_wr.opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
-    client_send_wr.send_flags = IBV_SEND_SIGNALED;          // NOTE: This tells the other NIC to send completion events
-    /* we have to tell server side info for RDMA */
-    client_send_wr.wr.rdma.rkey = server_metadata_attr.stag.remote_stag;
-    client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address;
-
-    gettimeofday (&start, NULL);
-    rdtsc();
-    start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
-
-    /* Now we post it */
-    uint64_t wrs_posted = 0, wrs_acked = 0;
-    ret = ibv_post_send(client_qp, 
-               &client_send_wr,
-           &bad_client_send_wr);
-    if (ret) {
-        rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-        return -errno;
-    }
-    wrs_posted++;
-
-    /* at this point we are expecting 1 work completion for the write */
-    /* We wait for the notification on the CQ channel */
-    ret = ibv_get_cq_event(io_completion_channel, &cq_ptr, &context);
-    if (ret) {
-        rdma_error("Failed to get next CQ event due to %d \n", -errno);
-        return -errno;
-    }
-
-    /* Request for more notifications. */
-    ret = ibv_req_notify_cq(cq_ptr, 0);
-    if (ret){
-        rdma_error("Failed to request further notifications %d \n", -errno);
-        return -errno;
-    }
-
-    const uint64_t minimum_duration_secs = 5;   /* number of seconds to run the experiment for at least */
-    const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
-    int stop_posting = 0;
-    do {
-        /* Poll the completion queue for the completion event for the earlier write */
-        do {
-            n = ibv_poll_cq(cq_ptr, 1, &wc);
-            if (n < 0) {
-                rdma_error("Failed to poll cq for wc due to %d \n", ret);
-                return ret;     /* ret is errno here */
-            }
-        } while (n < 1);
-        wrs_acked += n;
-
-        /* Check that the write succeeded */
-        if (wc.status != IBV_WC_SUCCESS) {
-            rdma_error("Work completion (WC) has error status: %d, %s at index %d",  
-                wc.status, ibv_wc_status_str(wc.status), 0);
-            return -(wc.status);       /* return negative value */
-        }
-
-        /* Is it time to look at the watch? */
-        if (wrs_posted % check_watch_interval == 0) {   
-            rdtsc1();
-            end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
-            if ((end_cycles - start_cycles) >= minimum_duration_secs * CPU_FREQ) {
-                // we can stop posting
-                stop_posting = 1;
-            }
-        }
-
-        if (!stop_posting) {
-            /* Post again */
-            ret = ibv_post_send(client_qp, 
-                    &client_send_wr,
-                    &bad_client_send_wr);
-            if (ret) {
-                rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-                return -errno;
-            }
-            wrs_posted++;
-        }
-    } while(wrs_acked < wrs_posted);
-    
-    rdtsc1();
-    end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
-    gettimeofday (&end, NULL);
-
-    /* Similar to connection management events, we need to acknowledge CQ events */
-    ibv_ack_cq_events(cq_ptr, 1 /* we received one event notification. This is not number of WC elements */);
-    
-    // Deregister local MRs
-    rdma_buffer_deregister(buffer1_mr);	
-    
-    // printf("RTT is %lf mu-sec\n", sum_cycles * 1e6 / (NUM_TRIALS * CPU_FREQ));    
-    
-    /* Calculate duration. See if RDTSC timer agrees with regular ctime.
-     * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
-     * but rdtsc is low overhead so we can use that from (roughly) keeping track of time while we use ctime 
-     * to calculate numbers */
-    double duration_rdtsc = (end_cycles - start_cycles) / CPU_FREQ;
-    double duration_ctime = (double)((end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) * 1.0e-6);
-    debug("Duration as measured by RDTSC: %.2lf secs, by ctime: %.2lf secs\n", duration_rdtsc, duration_ctime);
-
-    double rtt = duration_ctime / wrs_acked;
-    debug("RTT = %.2lf micro-secs. Sampled for %.2lf seconds\n", rtt * 1e6, duration_ctime);
-    return rtt * 1e6;
-}
-
+enum mem_reg_mode { 
+    MR_MODE_PRE_REGISTER,               // Use a pre-registered buffer and use it for all transactions
+    MR_MODE_PRE_REGISTER_WITH_ROTATE,   // Use a set of pre-registered buffers (for the same piece of memory) but rotate their usage
+    MR_MODE_ADHOC_REGISTER,             // Register buffers in datapath as necessary
+};
 
 /* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
 /* Returns xput in ops/sec */
-static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured_op rdma_op)
-{
+static double measure_xput(
+    uint32_t msg_size,                  // payload size
+    int num_concur,                     // number of requests in flight; use 1 for RTT measurements
+    enum rdma_measured_op rdma_op,      // rdma op to use i.e., read or write
+    enum mem_reg_mode mr_mode,          // mem reg mode; see comments for each "enum mem_reg_mode" 
+    int num_lbuffers                    // number of pre-registed buffers to rotate between; only valid for MR_MODE_PRE_REGISTER_WITH_ROTATE
+) {
     int ret = -1, n, i;
     struct ibv_wc* wc;
     uint64_t start_cycles, end_cycles;
     struct timeval      start, end;
     struct ibv_cq *cq_ptr = NULL;
     void *context = NULL;
-    struct ibv_mr *buffer1_mr = NULL;           /* Make sure to deregister these local MRs before exiting */
-
+    struct ibv_mr **mr_buffers = NULL;           /* Make sure to deregister these local MRs before exiting */
+    
     /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
      * is very less; while there is no such limit for WRITES. The connection parameters initiator_depth
      * and responder_resources determine such limit, which are again limited by hardware device 
@@ -611,28 +482,56 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
         return -EOVERFLOW;
     }
 
-    /* Allocate a client buffer to write from */
+    num_lbuffers = (mr_mode == MR_MODE_PRE_REGISTER_WITH_ROTATE) ? num_lbuffers : 1;
+    if (num_lbuffers <= 0) {
+        rdma_error("Invalid number of client-side buffers provided: %d\n", num_lbuffers);
+        return -EINVAL;
+    }
+
+    /* Allocate client buffers to read/write from (use the same piece of underlying memory) */
+    mr_buffers = (struct ibv_mr**) malloc(num_lbuffers * sizeof(struct ibv_mr*));
     size_t buf_size = msg_size * num_concur;
-    buffer1_mr = rdma_buffer_alloc(pd,
+    mr_buffers[0] = rdma_buffer_alloc(pd,
         buf_size,
         (IBV_ACCESS_LOCAL_WRITE | 
             IBV_ACCESS_REMOTE_WRITE | 
             IBV_ACCESS_REMOTE_READ));
-    if (!buffer1_mr) {
+    if (!mr_buffers[0]) {
         rdma_error("We failed to create the destination buffer, -ENOMEM\n");
         return -ENOMEM;
+    }
+    debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", 0,
+        mr_buffers[0]->addr, mr_buffers[0]->length, mr_buffers[0]->handle, mr_buffers[0]->lkey, mr_buffers[0]->rkey);
+
+    if (num_lbuffers > 1) {
+        /* Register rest of the buffers using same piece of memory */
+        for (i = 1; i < num_lbuffers; i++) {
+            mr_buffers[i] = rdma_buffer_register(pd,
+                mr_buffers[0]->addr,
+                buf_size,
+                (IBV_ACCESS_LOCAL_WRITE | 
+                    IBV_ACCESS_REMOTE_WRITE | 
+                    IBV_ACCESS_REMOTE_READ));
+
+            if (!mr_buffers[i]) {
+                rdma_error("Registering buffer %d failed\n", i);
+                return -ENOMEM;
+            }
+            
+            debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", i,
+                mr_buffers[i]->addr, mr_buffers[i]->length, mr_buffers[i]->handle, mr_buffers[i]->lkey, mr_buffers[i]->rkey);
+        }
     }
 
     /* For sanity check, fill the client buffer with different alphabets in each message. 
      * We can verify this by reading the server buffer later. Only works for RDMA WRITEs though */
     for (i = 0; i < num_concur; i++)
-        memset(buffer1_mr->addr + (i*msg_size), 'a' + i%26, msg_size);
+        memset(mr_buffers[0]->addr + (i*msg_size), 'a' + i%26, msg_size);
 
-    // NOTE: May wanna fill the buffer with something other than zeroes
-    /* Make WR for writing this buffer */
-    client_send_sge.addr = (uint64_t) buffer1_mr->addr;
+    /* Prepare a template WR for RDMA ops */
+    client_send_sge.addr = (uint64_t) mr_buffers[0]->addr;  
     client_send_sge.length = (uint32_t) msg_size;           // Send only msg_size
-    client_send_sge.lkey = buffer1_mr->lkey;
+    client_send_sge.lkey = mr_buffers[0]->lkey;
     /* now we link to the send work request */
     bzero(&client_send_wr, sizeof(client_send_wr));
     client_send_wr.sg_list = &client_send_sge;
@@ -648,14 +547,16 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
     start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
 
     /* Post until number of max requests in flight is hit */
-    char *buf_ptr = buffer1_mr->addr;
+    char *buf_ptr = mr_buffers[0]->addr;
     int	buf_offset = 0;
+    int buf_num = 0;
     uint64_t wr_posted = 0, wr_acked = 0;
     for (i = 0; i < num_concur; i++) {
-        /* it is safe to reuse client_send_wr for all requests; we just change the local and remote addresses */
-        client_send_wr.wr_id = buf_offset;              /* User-assigned id to recognize this WR on completion */
-        client_send_sge.addr = (uint64_t) buf_ptr; 
-        client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address + buf_offset;
+        /* it is safe to reuse client_send_wr object after post_() returns */
+        client_send_sge.lkey = mr_buffers[buf_num]->lkey;   /* Sets which MR to use to access the local address */
+        client_send_wr.wr_id = buf_offset;                  /* User-assigned id to recognize this WR on completion */
+        client_send_sge.addr = (uint64_t) buf_ptr;          /* Sets which mem addr to read from/write to locally */
+        client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address + buf_offset; 
         ret = ibv_post_send(client_qp, 
                 &client_send_wr,
                 &bad_client_send_wr);
@@ -665,8 +566,9 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
         }
         	
         wr_posted++;
-        buf_offset = (buf_offset + msg_size) % buf_size;
-	    buf_ptr    = buffer1_mr->addr + buf_offset;
+        buf_offset  = (buf_offset + msg_size) % buf_size;
+	    buf_ptr     = mr_buffers[0]->addr + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
+        buf_num     = (buf_num++) % num_lbuffers;
     }
 
     /* at this point we are expecting work completions for the requests */
@@ -679,7 +581,7 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
 
     /* Request for more notifications. */
     ret = ibv_req_notify_cq(cq_ptr, 0);
-    if (ret){
+    if (ret) {
         rdma_error("Failed to request further notifications %d \n", -errno);
         return -errno;
     }
@@ -719,11 +621,12 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
 
             if (!stop_posting) {
                 /* Issue another request that reads/writes from same locations as the completed one */
-                buf_offset = wc[i].wr_id;
-                buf_ptr    = buffer1_mr->addr + buf_offset;
+                buf_offset  = wc[i].wr_id;
+                buf_ptr     = mr_buffers[0]->addr + buf_offset;
+                client_send_sge.lkey = mr_buffers[buf_num]->lkey; 
                 client_send_wr.wr_id = buf_offset;              /* User-assigned id to recognize this WR on completion */
                 client_send_sge.addr = (uint64_t) buf_ptr; 
-                client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address + buf_offset; 
+                client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address + buf_offset;
                 ret = ibv_post_send(client_qp, 
                         &client_send_wr,
                         &bad_client_send_wr);
@@ -732,6 +635,7 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
                     return -errno;
                 }
                 wr_posted++;
+                buf_num     = (buf_num++) % num_lbuffers;
             }
         }
 
@@ -752,12 +656,12 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
     /* In case of RDMA writes, perform a sanity check by reading the server-side buffer and checking its content */
     if (rdma_op == RDMA_WRITE_OP) {
         /* Clear the local buffer and issue a big read */
-        memset(buffer1_mr->addr, 0, num_concur * msg_size); 
+        memset(mr_buffers[0]->addr, 0, num_concur * msg_size); 
 
         /* Now we prepare a READ using same variables but for destination */
-        client_send_sge.addr = (uint64_t) buffer1_mr->addr;
+        client_send_sge.addr = (uint64_t) mr_buffers[0]->addr;
         client_send_sge.length = (uint32_t) msg_size * num_concur;           // entire buffer
-        client_send_sge.lkey = buffer1_mr->lkey;
+        client_send_sge.lkey = mr_buffers[0]->lkey;
         /* now we link to the send work request */
         bzero(&client_send_wr, sizeof(client_send_wr));
         client_send_wr.sg_list = &client_send_sge;
@@ -786,11 +690,11 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
         char* expected = (char*) malloc(msg_size * sizeof(char));
         for (i = 0; i < num_concur; i++) {
             memset(expected, 'a' + i%26, msg_size);
-            if (strncmp(expected, (char*) buffer1_mr->addr + (i*msg_size), msg_size) != 0) {
-                printf("%d\n", strncmp(expected, (char*) buffer1_mr->addr + (i*msg_size), msg_size));
+            if (strncmp(expected, (char*) mr_buffers[0]->addr + (i*msg_size), msg_size) != 0) {
+                printf("%d\n", strncmp(expected, (char*) mr_buffers[0]->addr + (i*msg_size), msg_size));
                 rdma_error("Sanity check failed. \nBuffer read from server does not contain expected data at msg index: %d.\n\
                     Expected: %.*s \n\
-                    Actual: %.*s \n", i+1, msg_size, expected, msg_size, (char*) buffer1_mr->addr + (i*msg_size));
+                    Actual: %.*s \n", i+1, msg_size, expected, msg_size, (char*) mr_buffers[0]->addr + (i*msg_size));
                 return 1;
             }
         }
@@ -798,7 +702,8 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
     }
 
     /* Deregister local MRs */
-    rdma_buffer_deregister(buffer1_mr);	
+    for (i = 0; i < num_lbuffers; i++)
+        rdma_buffer_deregister(mr_buffers[i]);	
 
     /* Calculate duration. See if RDTSC timer agrees with regular ctime.
      * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
@@ -806,11 +711,11 @@ static double measure_xput(uint32_t msg_size, int num_concur, enum rdma_measured
      * to calculate numbers */
     double duration_rdtsc = (end_cycles - start_cycles) / CPU_FREQ;
     double duration_ctime = (double)((end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) * 1.0e-6);
-    printf("Duration as measured by RDTSC: %.2lf secs, by ctime: %.2lf secs\n", duration_rdtsc, duration_ctime);
+    debug("Duration as measured by RDTSC: %.2lf secs, by ctime: %.2lf secs\n", duration_rdtsc, duration_ctime);
 
     double goodput_pps = wr_acked / duration_ctime;
     double goodput_bps = goodput_pps * msg_size * 8;
-    printf("Goodput = %.2lf Gbps. Sampled for %.2lf seconds\n", goodput_bps / 1e9, duration_ctime);
+    debug("Goodput = %.2lf Gbps. Sampled for %.2lf seconds\n", goodput_bps / 1e9, duration_ctime);
     return goodput_pps;
 }
 
@@ -882,7 +787,7 @@ static int client_disconnect_and_clean()
 
 void usage() {
     printf("Usage:\n");
-    printf("rdma_client: [-a <server_addr>] [-p <server_port>] [--simple]\n");
+    printf("rdma_client: [-a <server_addr>] [-p <server_port>] [-s/--simple]\n");
     printf("	--simple: runs a simple ping to test RDMA connection\n");
     printf("(default IP is 127.0.0.1 and port is %d)\n", DEFAULT_RDMA_PORT);
     exit(1);
@@ -899,7 +804,10 @@ int main(int argc, char **argv) {
     src = dst = NULL; 
     int simple = 0;
     int rtt_flag = 0, xput_flag = 0;
-    int num_concur = 1, write_to_file = 0;
+    int num_concur = 1;
+    int num_mbuf = 1;
+    int msg_size = 0;
+    int write_to_file = 0;
     char outfile[200] ;
 
     /* Parse Command Line Arguments */
@@ -908,10 +816,12 @@ int main(int argc, char **argv) {
         {.name = "rtt", .has_arg = no_argument, .val = 'r'},
         {.name = "xput", .has_arg = no_argument, .val = 'x'},
         {.name = "concur", .has_arg = required_argument, .val = 'c'},
+        {.name = "buffers", .has_arg = required_argument, .val = 'b'},
+        {.name = "msgsize", .has_arg = required_argument, .val = 'm'},
         {.name = "out", .has_arg = required_argument, .val = 'o'},
         {}
     };
-    while ((option = getopt_long(argc, argv, "sa:p:rxc:o:", options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "sa:p:rxc:b:m:o:", options, NULL)) != -1) {
         switch (option) {
             case 's':
                 /* run the basic example to test connection */
@@ -952,9 +862,28 @@ int main(int argc, char **argv) {
                 break;
             case 'c':
                 /* concurrency i.e., number of requests in flight */
+                /* num_concur < 0: invalid; = 0: vary from 1 to 128; > 0: use the number. Default is 1 */
                 num_concur = strtol(optarg, NULL, 0); 
-                if (num_concur < 1 || num_concur > MAX_WR) {
-                    rdma_error("Invalid num_concur. Should be between 1 and %d\n", MAX_WR);
+                if (num_concur < 0 || num_concur > MAX_WR) {
+                    rdma_error("Invalid num_concur. Should be between 0 and %d\n", MAX_WR);
+                    return -1;
+                }
+                break;  
+            case 'b':
+                /* number of MR buffers to use */
+                /* num_mbuf < 0: invalid; = 0: vary from 1 to 256; > 0: use the number. Default is 1 */
+                num_mbuf = strtol(optarg, NULL, 0); 
+                if (num_mbuf < 0 || num_mbuf > MAX_MR) {
+                    rdma_error("Invalid num_mbuf. Should be between 1 and %d\n", MAX_MR);
+                    return -1;
+                }
+                break; 
+            case 'm':
+                /* input payload size to use */
+                /* msg_size < 0: invalid; = 0: vary from 64 to 4096; > 0: use the number. Default is 0 (vary) */
+                msg_size = strtol(optarg, NULL, 0); 
+                if (msg_size < 0 || msg_size > 4096) {
+                    rdma_error("Invalid msg_size. Should be between 1 and %d\n", 4096);
                     return -1;
                 }
                 break;  
@@ -1020,17 +949,25 @@ int main(int argc, char **argv) {
             return ret;
         }
         
+        int min_num_concur = num_concur == 0 ? 1 : num_concur;
+        int max_num_concur = num_concur == 0 ? 256 : num_concur;        /* Empirically measured that anything above this number does not matter for single core */
+
+        int min_msg_size = msg_size == 0 ? 64 : msg_size;
+        int max_msg_size = msg_size == 0 ? 4096 : msg_size;
+        int msg_size_incr = 64;
+
+        int min_num_mbuf = num_mbuf == 0 ? 1 : num_mbuf;
+        int max_num_mbuf = num_mbuf == 0 ? MAX_MR : num_mbuf;
+
         /* Get roundtrip latencies for ops */
         if (rtt_flag) {
-            uint32_t msg_size = 64;
-            // uint32_t max_reqs_in_flight = 1;
-
-            // printf("RTT for %d B WRITES: %0.2lf mu-secs\n", msg_size, measure_rtt(msg_size, RDMA_WRITE_OP));        // WRITE RTT
-            // printf("RTT for %d B READS : %0.2lf mu-secs\n", msg_size, measure_rtt(msg_size, RDMA_READ_OP));         // READ RTT
+            // printf("RTT for %d B WRITES: %0.2lf mu-secs\n", 64, measure_rtt(64, RDMA_WRITE_OP));        // WRITE RTT
+            // printf("RTT for %d B READS : %0.2lf mu-secs\n", 64, measure_rtt(64, RDMA_READ_OP));         // READ RTT
 
             /* We can also get them using the xput method with 1 request in flight; results agreed with above method. */
-            // printf("RTT for %d B WRITES: %0.2lf mu-secs\n", msg_size, 1e6 / measure_xput(msg_size, max_reqs_in_flight, RDMA_WRITE_OP) );     // WRITE RTT
-            // printf("RTT for %d B READS : %0.2lf mu-secs\n", msg_size, 1e6 / measure_xput(msg_size, max_reqs_in_flight, RDMA_READ_OP));       // READ RTT
+            // printf("RTT for %d B WRITES: %0.2lf mu-secs\n", 64, 1e6 / measure_xput(64, 1, RDMA_WRITE_OP) );     // WRITE RTT
+            // printf("RTT for %d B READS : %0.2lf mu-secs\n", 64, 1e6 / measure_xput(64, 1, RDMA_READ_OP));       // READ RTT
+
 
             /* Generate RTT numbers for different msg sizes */
             FILE *fptr;
@@ -1041,9 +978,9 @@ int main(int argc, char **argv) {
             }
             printf("=========== RTTs =============\n");
             printf("msg size,write,read\n");
-            for (msg_size = 64; msg_size <= 2560; msg_size += 64) {
-                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP);
-                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP);
+            for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += msg_size_incr) {
+                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
+                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
                 printf("%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
                 if (write_to_file) {
                     fprintf(fptr, "%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
@@ -1055,32 +992,32 @@ int main(int argc, char **argv) {
 
         /* Get xputs for ops */
         if (xput_flag) {
-            uint32_t msg_size = 64;
-            // max_reqs_in_flight = 20;
-            // printf("Goodput for %3d B READS (%3d QPE) : %0.2lf gbps\n", msg_size, max_reqs_in_flight, 
-            //     measure_xput(msg_size, max_reqs_in_flight, RDMA_READ_OP) * msg_size * 8 / 1e9);       // READ Xput
-            // printf("Goodput for %3d B WRITES (%3d QPE) : %0.2lf gbps\n", msg_size, max_reqs_in_flight, 
-            //     measure_xput(msg_size, max_reqs_in_flight, RDMA_WRITE_OP) );       // WRITE Xput
+            // printf("Goodput for %3d B READS (%3d QPE) : %0.2lf gbps\n", 1024, 1, 
+            //     measure_xput(1024, 1, RDMA_READ_OP) * 1024 * 8 / 1e9);       // READ Xput
+            // printf("Goodput for %3d B WRITES (%3d QPE) : %0.2lf gbps\n", 1024, 1, 
+            //     measure_xput(1024, 1, RDMA_WRITE_OP) );       // WRITE Xput
 
             FILE *fptr;
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,write_ops,write_gbps,read_ops,read_gbps\n");
+                fprintf(fptr, "msg size,window size,mbufs,write_ops,write_gbps,read_ops,read_gbps\n");
             }
             printf("=========== Xput =============\n");
-            printf("msg size,write_ops,write,read_ops,read\n");
-            for (msg_size = 64; msg_size <= 4096; msg_size += 64) {
-                double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP);
-                double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? measure_xput(msg_size, num_concur, RDMA_READ_OP) : 0;
-                double wput_gbps = wput_ops * msg_size * 8 / 1e9;
-                double rput_gbps = rput_ops * msg_size * 8 / 1e9;
-                printf("%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, wput_ops, wput_gbps, rput_ops, rput_gbps);
-                if (write_to_file) {
-                    fprintf(fptr, "%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, wput_ops, wput_gbps, rput_ops, rput_gbps);
-                    fflush(fptr);
-                }
-            }
+            printf("msg size,window size,mbufs,write_ops,write_gbps,read_ops,read_gbps\n");
+            for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
+                for (num_mbuf = min_num_mbuf; num_mbuf <= max_num_mbuf; num_mbuf *= 2)
+                    for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) {
+                        double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
+                        double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf) : 0;
+                        double wput_gbps = wput_ops * msg_size * 8 / 1e9;
+                        double rput_gbps = rput_ops * msg_size * 8 / 1e9;
+                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_mbuf, wput_ops, wput_gbps, rput_ops, rput_gbps);
+                        if (write_to_file) {
+                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_mbuf, wput_ops, wput_gbps, rput_ops, rput_gbps);
+                            fflush(fptr);
+                        }
+                    }
             if (write_to_file)  fclose(fptr);
         }
     }

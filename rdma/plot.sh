@@ -60,6 +60,8 @@ fi
 # #
 
 
+#==============================================================#
+
 # # # RDMA read/write RTT plot
 # datafile=${RUNDIR}/rtts
 # plotfile=${PLOTDIR}/rtt_${runid}.png
@@ -75,39 +77,101 @@ fi
 #     -o ${plotfile} -of png 
 # display ${plotfile} &
 
+#==============================================================#
 
-# # RDMA read/write xput plots 
-# # (for various window sizes)
-for concur in 1 4 16 64 128 256; 
-do 
-    echo "Running xput with $concur concurrent requests"; 
-    datafile=${RUNDIR}/xput_window_${concur}
-    if [[ $REGEN ]]; then
-        bash run.sh -o="-x -c ${concur} -o ${datafile}"
-    elif [ ! -f $datafile ]; then
-        echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
-        exit 1
-    fi
-    files="$files -d ${datafile} -l $concur"
-done
+# # # RDMA read/write xput plots 
+# # # (changing payload size for various window sizes)
+# # # (relevant runs: 12-16-02-06, )
+# vary=0
+# for concur in 1 4 16 64 128 256; 
+# do 
+#     echo "Running xput with $concur concurrent requests"; 
+#     datafile=${RUNDIR}/xput_window_${concur}
+#     if [[ $REGEN ]]; then
+#         bash run.sh -o="-x -c ${concur} -m ${vary} -o ${datafile}"
+#     elif [ ! -f $datafile ]; then
+#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#         exit 1
+#     fi
+#     files="$files -d ${datafile} -l $concur"
+# done
 
-plotfile=${PLOTDIR}/write_xput_${runid}.png
-python ../tools/plot.py $files          \
-    -xc "msg size" -xl "msg size (B)"   \
-    -yc "write_gbps" -yl "Goodput (gbps)"    \
+# plotfile=${PLOTDIR}/write_xput_${runid}.png
+# python ../tools/plot.py $files          \
+#     -xc "msg size" -xl "msg size (B)"   \
+#     -yc "write_gbps" -yl "Goodput (gbps)"    \
+#     -o ${plotfile} -of png -fs 11 --ltitle "window size"
+# display ${plotfile} &
+
+# plotfile=${PLOTDIR}/write_xput_ops_${runid}.png
+# python ../tools/plot.py $files          \
+#     -xc "msg size" -xl "msg size (B)"   \
+#     -yc "write_ops" -yl "Goodput (ops)"    \
+#     -o ${plotfile} -of png -fs 11 --ltitle "window size"
+# display ${plotfile} &
+
+# plotfile=${PLOTDIR}/read_xput_${runid}.png
+# python ../tools/plot.py $files          \
+#     -xc "msg size" -xl "msg size (B)"   \
+#     -yc "read_gbps" -yl "Goodput (gbps)"    \
+#     -o ${plotfile} -of png -fs 11 --ltitle "window size"
+# display ${plotfile} &
+
+concur=16
+plotfile=${PLOTDIR}/write_xput_concur${concur}_${runid}.png
+python ../tools/plot.py -d ${RUNDIR}/xput_window_${concur} -l "$concur" \
+    -xc "msg size" -xl "msg size (B)"                       \
+    -yc "write_ops" -yl "million ops/sec" --ymul 1e-6       \
     -o ${plotfile} -of png -fs 11 --ltitle "window size"
 display ${plotfile} &
 
-plotfile=${PLOTDIR}/write_xput_ops_${runid}.png
-python ../tools/plot.py $files          \
-    -xc "msg size" -xl "msg size (B)"   \
-    -yc "write_ops" -yl "Goodput (ops)"    \
-    -o ${plotfile} -of png -fs 11 --ltitle "window size"
-display ${plotfile} &
+#================================================================#
 
-plotfile=${PLOTDIR}/read_xput_${runid}.png
-python ../tools/plot.py $files          \
-    -xc "msg size" -xl "msg size (B)"   \
-    -yc "read_gbps" -yl "Goodput (gbps)"    \
-    -o ${plotfile} -of png -fs 11 --ltitle "window size"
-display ${plotfile} &
+# # # RDMA read/write xput plots 
+# # # (changing window size for various payload sizes)
+# # # (relevant runs: 12-20-23-32, )
+# vary=0
+# for msgsize in 8 32 64 128 256 512 1024 2048 4096; 
+# do 
+#     echo "Running xput with $msgsize B msg size for various window sizes"; 
+#     datafile=${RUNDIR}/xput_msgsize_${msgsize}
+#     if [[ $REGEN ]]; then
+#         bash run.sh -o="-x -c ${vary} -m ${msgsize} -o ${datafile}"
+#     elif [ ! -f $datafile ]; then
+#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#         exit 1
+#     fi
+#     files="$files -d ${datafile} -l ${msgsize}B"
+# done
+
+# plotfile=${PLOTDIR}/write_xput_${runid}.png
+# python ../tools/plot.py $files                      \
+#     -xc "window size" -xl "outstanding requests"    \
+#     -yc "write_gbps" -yl "Goodput (gbps)"           \
+#     -o ${plotfile} -of png -fs 11 --ltitle "payload size"  --xlog
+# display ${plotfile} &
+
+# plotfile=${PLOTDIR}/write_xput_ops_${runid}.png
+# python ../tools/plot.py $files                          \
+#     -xc "window size" -xl "outstanding requests"        \
+#     -yc "write_ops" -yl "million ops/sec"  --ymul 1e-6  \
+#     -o ${plotfile} -of png -fs 11 --ltitle "payload size"  --xlog
+# display ${plotfile} &
+
+# plotfile=${PLOTDIR}/read_xput_${runid}.png
+# python ../tools/plot.py $files                      \
+#     -xc "window size" -xl "outstanding requests"    \
+#     -yc "read_gbps" -yl "Goodput (gbps)"            \
+#     -o ${plotfile} -of png -fs 11 --ltitle "payload size" --xlog
+# display ${plotfile} &
+
+# msgsize=64
+# plotfile=${PLOTDIR}/write_xput_msgsize${msgsize}_${runid}.png
+# python ../tools/plot.py -d  ${RUNDIR}/xput_msgsize_${msgsize}   \
+#     -xc "window size" -xl "outstanding requests"                \
+#     -yc "write_ops" -yl "million ops/sec"  --ymul 1e-6          \
+#     -o ${plotfile} -of png -fs 11 --ltitle "payload size" --xlog
+# display ${plotfile} &
+
+
+#================================================================#
