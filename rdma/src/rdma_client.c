@@ -467,7 +467,7 @@ enum rdma_measured_op { RDMA_READ_OP, RDMA_WRITE_OP };
 enum mem_reg_mode { 
     MR_MODE_PRE_REGISTER,               // Use a pre-registered buffer and use it for all transactions
     MR_MODE_PRE_REGISTER_WITH_ROTATE,   // Use a set of pre-registered buffers (for the same piece of memory) but rotate their usage
-    MR_MODE_ADHOC_REGISTER,             // Register buffers in datapath as necessary
+    MR_MODE_REGISTER_IN_DATAPTH,        // Register buffers in datapath as necessary
 };
 
 /* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
@@ -486,6 +486,7 @@ static double measure_xput(
     struct ibv_cq *cq_ptr = NULL;
     void *context = NULL;
     struct ibv_mr **mr_buffers = NULL;           /* Make sure to deregister these local MRs before exiting */
+    struct ibv_mr *tmpbuffer = NULL;
     
     /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
      * is very less; while there is no such limit for WRITES. The connection parameters initiator_depth
@@ -508,7 +509,7 @@ static double measure_xput(
     mr_buffers = (struct ibv_mr**) malloc(num_lbuffers * sizeof(struct ibv_mr*));
     size_t buf_size = msg_size;
     mr_buffers[0] = rdma_buffer_alloc(pd,
-        4096,       // FIXME
+        buf_size,
         (IBV_ACCESS_LOCAL_WRITE | 
             IBV_ACCESS_REMOTE_WRITE | 
             IBV_ACCESS_REMOTE_READ));
@@ -520,13 +521,19 @@ static double measure_xput(
         mr_buffers[0]->addr, mr_buffers[0]->length, mr_buffers[0]->handle, mr_buffers[0]->lkey, mr_buffers[0]->rkey);
 
     if (num_lbuffers > 1) {
-        /* Register rest of the buffers using same piece of memory FIXME */
+        /* Register rest of the buffers using same piece of memory */
         for (i = 1; i < num_lbuffers; i++) {
-            mr_buffers[i] = rdma_buffer_alloc(pd,
-                4096,       // FIXME
+            mr_buffers[i] = rdma_buffer_register(pd,
+                mr_buffers[0]->addr,
+                buf_size,
                 (IBV_ACCESS_LOCAL_WRITE | 
                     IBV_ACCESS_REMOTE_WRITE | 
                     IBV_ACCESS_REMOTE_READ));
+            // mr_buffers[i] = rdma_buffer_alloc(pd,
+            //     buf_size,
+            //     (IBV_ACCESS_LOCAL_WRITE | 
+            //         IBV_ACCESS_REMOTE_WRITE | 
+            //         IBV_ACCESS_REMOTE_READ));
 
             if (!mr_buffers[i]) {
                 rdma_error("Registering buffer %d failed\n", i);
@@ -540,9 +547,8 @@ static double measure_xput(
 
     /* For sanity check, fill the client buffer with different alphabets in each message. 
      * We can verify this by reading the server buffer later. Only works for RDMA WRITEs though */
-    // FIXME
-    // for (i = 0; i < num_concur; i++)
-    //     memset(mr_buffers[0]->addr + (i*msg_size), 'a' + i%26, msg_size);
+    for (i = 0; i < num_concur; i++)
+        memset(mr_buffers[0]->addr + (i*msg_size), 'a' + i%26, msg_size);
 
     /* Prepare a template WR for RDMA ops */
     client_send_sge.addr = (uint64_t) mr_buffers[0]->addr;  
@@ -569,10 +575,9 @@ static double measure_xput(
     uint64_t wr_posted = 0, wr_acked = 0;
     for (i = 0; i < num_concur; i++) {
         /* it is safe to reuse client_send_wr object after post_() returns */
-        client_send_sge.addr = (uint64_t) mr_buffers[buf_num]->addr;  
         client_send_sge.lkey = mr_buffers[buf_num]->lkey;   /* Sets which MR to use to access the local address */
         client_send_wr.wr_id = buf_offset;                  /* User-assigned id to recognize this WR on completion */
-        // client_send_sge.addr = (uint64_t) buf_ptr;          /* Sets which mem addr to read from/write to locally */  // FIXME
+        client_send_sge.addr = (uint64_t) buf_ptr;          /* Sets which mem addr to read from/write to locally */  // FIXME
         client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address + buf_offset; 
         ret = ibv_post_send(client_qp, 
                 &client_send_wr,
@@ -585,8 +590,21 @@ static double measure_xput(
         wr_posted++;
         buf_offset  = (buf_offset + msg_size) % buf_size;
 	    buf_ptr     = mr_buffers[0]->addr + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
-        // buf_num     = (buf_num++) % num_lbuffers;
-        buf_num     = rand_xorshf96() % num_lbuffers;
+        buf_num     = (buf_num++) % num_lbuffers;
+        // buf_num     = rand_xorshf96() % num_lbuffers;
+
+        if (mr_mode == MR_MODE_REGISTER_IN_DATAPTH) {
+            /* Emulate a buffer registration op for each request in datapath so we can capture its latency in the RTT.
+             * We have to both register and de-register the buffer, just registering would cause buffer overflow 
+             * So the number we get is not striclty register latency but at least this will give us a ballpark number */
+            tmpbuffer = rdma_buffer_register(pd,
+                mr_buffers[0]->addr,                // use the same piece of memory
+                buf_size,
+                (IBV_ACCESS_LOCAL_WRITE | 
+                    IBV_ACCESS_REMOTE_WRITE | 
+                    IBV_ACCESS_REMOTE_READ));
+            rdma_buffer_deregister(tmpbuffer);
+        }
     }
 
     /* at this point we are expecting work completions for the requests */
@@ -643,8 +661,7 @@ static double measure_xput(
                 buf_ptr     = mr_buffers[0]->addr + buf_offset;
                 client_send_sge.lkey = mr_buffers[buf_num]->lkey; 
                 client_send_wr.wr_id = buf_offset;              /* User-assigned id to recognize this WR on completion */
-                // client_send_sge.addr = (uint64_t) buf_ptr;   // FIXME
-                client_send_sge.addr = (uint64_t) mr_buffers[buf_num]->addr;  
+                client_send_sge.addr = (uint64_t) buf_ptr;
                 client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address + buf_offset;
                 ret = ibv_post_send(client_qp, 
                         &client_send_wr,
@@ -655,7 +672,20 @@ static double measure_xput(
                 }
                 wr_posted++;
                 buf_num     = (buf_num++) % num_lbuffers;
-                buf_num     = rand_xorshf96() % num_lbuffers;
+                // buf_num     = rand_xorshf96() % num_lbuffers;
+
+                if (mr_mode == MR_MODE_REGISTER_IN_DATAPTH) {
+                    /* Emulate a buffer registration op for each request in datapath so we can capture its latency in the RTT.
+                    * We have to both register and de-register the buffer, just registering would cause buffer overflow 
+                    * So the number we get is not striclty register latency but at least this will give us a ballpark number */
+                    tmpbuffer = rdma_buffer_register(pd,
+                        mr_buffers[0]->addr,                // use the same piece of memory
+                        buf_size,
+                        (IBV_ACCESS_LOCAL_WRITE | 
+                            IBV_ACCESS_REMOTE_WRITE | 
+                            IBV_ACCESS_REMOTE_READ));
+                    rdma_buffer_deregister(tmpbuffer);
+                }
             }
         }
 
@@ -674,7 +704,7 @@ static double measure_xput(
 
     /* SANITY CHECK */
     /* In case of RDMA writes, perform a sanity check by reading the server-side buffer and checking its content */
-    if (0) {        // FIXME
+    if (num_lbuffers == 1 && rdma_op == RDMA_WRITE_OP) {
         /* Clear the local buffer and issue a big read */
         memset(mr_buffers[0]->addr, 0, num_concur * msg_size); 
 
@@ -1000,8 +1030,8 @@ int main(int argc, char **argv) {
             printf("=========== RTTs =============\n");
             printf("msg size,write,read\n");
             for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += msg_size_incr) {
-                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
-                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
+                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_REGISTER_IN_DATAPTH, num_mbuf);
+                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_REGISTER_IN_DATAPTH, num_mbuf);
                 printf("%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
                 if (write_to_file) {
                     fprintf(fptr, "%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);

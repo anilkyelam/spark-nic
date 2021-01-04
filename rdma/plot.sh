@@ -57,6 +57,7 @@ fi
 
 # #
 # # START PLOTTING
+# # (Uncomment a section as required)
 # #
 
 
@@ -176,3 +177,22 @@ fi
 
 #================================================================#
 
+# # Cost of memory registration in datapath
+# # RTT numbers with mr register and deregister in datapath
+# # (relevant runs: 01-03-22-38 )
+# datafile=${RUNDIR}/rtts_mr
+# plotfile=${PLOTDIR}/rtt_mr_${runid}.png
+# if [[ $REGEN ]]; then
+#     # TODO: Need to set mr_mode to MR_MODE_REGISTER_IN_DATAPTH in the client
+#     bash run.sh -o="-r -o ${datafile}"     
+# elif [ ! -f $datafile ]; then
+#     echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#     exit 1
+# fi
+# python ../tools/plot.py -d ${datafile} \
+#     -xc "msg size" -xl "msg size (B)"   \
+#     -yc "write" -yc "read" -yl "RTT (micro-sec)" \
+#     -o ${plotfile} -of png 
+# display ${plotfile} &
+
+#================================================================#
