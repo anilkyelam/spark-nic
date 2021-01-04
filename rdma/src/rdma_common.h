@@ -58,7 +58,7 @@
 /* Capacity of the completion queue (CQ) (limited by "max_cqe" dev attr) */
 #define CQ_CAPACITY (2*MAX_WR)
 
-/* MAX SGE capacity (limited by "max_sge" dev attr) */
+/* MAX SGE capacity (limited by "max_sge" dev attr which is 30 for CX-5s) */
 #define MAX_SGE (2)
 
 /* MAX outstnading READ/ATOMIC ops 

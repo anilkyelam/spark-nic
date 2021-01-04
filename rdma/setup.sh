@@ -49,7 +49,7 @@ then
         echo "Check with Stew, or run with -f/--force to override and proceed!"
         exit 1
     fi
-    pkill init  # terminate setup and continue
+    sudo pkill init  # terminate setup and continue
 fi
 
 # Make sure the switch is not configured with custom openflow rules

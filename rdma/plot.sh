@@ -117,19 +117,19 @@ fi
 #     -o ${plotfile} -of png -fs 11 --ltitle "window size"
 # display ${plotfile} &
 
-concur=16
-plotfile=${PLOTDIR}/write_xput_concur${concur}_${runid}.png
-python ../tools/plot.py -d ${RUNDIR}/xput_window_${concur} -l "$concur" \
-    -xc "msg size" -xl "msg size (B)"                       \
-    -yc "write_ops" -yl "million ops/sec" --ymul 1e-6       \
-    -o ${plotfile} -of png -fs 11 --ltitle "window size"
-display ${plotfile} &
+# concur=16
+# plotfile=${PLOTDIR}/write_xput_concur${concur}_${runid}.png
+# python ../tools/plot.py -d ${RUNDIR}/xput_window_${concur} -l "$concur" \
+#     -xc "msg size" -xl "msg size (B)"                       \
+#     -yc "write_ops" -yl "million ops/sec" --ymul 1e-6       \
+#     -o ${plotfile} -of png -fs 11 --ltitle "window size"
+# display ${plotfile} &
 
 #================================================================#
 
-# # # RDMA read/write xput plots 
-# # # (changing window size for various payload sizes)
-# # # (relevant runs: 12-20-23-32, )
+# # RDMA read/write xput plots 
+# # (changing window size for various payload sizes)
+# # (relevant runs: 12-20-23-32, )
 # vary=0
 # for msgsize in 8 32 64 128 256 512 1024 2048 4096; 
 # do 
@@ -148,14 +148,14 @@ display ${plotfile} &
 # python ../tools/plot.py $files                      \
 #     -xc "window size" -xl "outstanding requests"    \
 #     -yc "write_gbps" -yl "Goodput (gbps)"           \
-#     -o ${plotfile} -of png -fs 11 --ltitle "payload size"  --xlog
+#     -o ${plotfile} -of png -fs 11 --ltitle "payload size"
 # display ${plotfile} &
 
 # plotfile=${PLOTDIR}/write_xput_ops_${runid}.png
 # python ../tools/plot.py $files                          \
 #     -xc "window size" -xl "outstanding requests"        \
 #     -yc "write_ops" -yl "million ops/sec"  --ymul 1e-6  \
-#     -o ${plotfile} -of png -fs 11 --ltitle "payload size"  --xlog
+#     -o ${plotfile} -of png -fs 11 --ltitle "payload size" 
 # display ${plotfile} &
 
 # plotfile=${PLOTDIR}/read_xput_${runid}.png
@@ -175,3 +175,4 @@ display ${plotfile} &
 
 
 #================================================================#
+

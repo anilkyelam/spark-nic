@@ -1,6 +1,7 @@
 
 # Workspace
 **/.vscode/
+scratch/
 
 # Scala
 **/target/*
