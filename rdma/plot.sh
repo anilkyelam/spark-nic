@@ -30,6 +30,7 @@ DIR=$(dirname $CUR_PATH)
 DATADIR=${DIR}/data
 mkdir -p ${DATADIR}
 PLOTDIR=${DIR}/plots
+PLOTEXT=png             # supported: png or pdf
 mkdir -p ${PLOTDIR} 
 
 
@@ -196,3 +197,31 @@ fi
 # display ${plotfile} &
 
 #================================================================#
+
+# # RDMA read/write xput plots for various data transfer modes
+# # (changing payload size for various window sizes FIXME)
+# # (relevant runs: , )
+vary=0
+for concur in 1 4 16 64; do
+    for msgsize in 64 128 256 512 1024 2048 4096; do 
+        echo "Running xput with $msgsize B msg size for window sizes $concur"; 
+        datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
+        if [[ $REGEN ]]; then
+            bash run.sh -o="-y -c ${concur} -m ${msgsize} -o ${datafile}"
+        elif [ ! -f $datafile ]; then
+            echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+            exit 1
+        fi
+
+        echo $datafile
+        plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
+        python ../tools/plot.py -d ${datafile} \
+            -xc "sg pieces" -xl "num sg pieces"   \
+            -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
+            -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
+            -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
+            --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
+            -o ${plotfile} -of ${PLOTEXT}  -fs 11
+        display ${plotfile} &
+    done
+done

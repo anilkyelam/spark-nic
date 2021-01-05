@@ -54,7 +54,7 @@ fi
 
 # Make sure the switch is not configured with custom openflow rules
 echo "Checking for openflow rules on the switch"
-pwd=$(cat switch.password)
+pwd=$(cat switch.password)      # Tip: Use (chmod) 600 access for this file
 rules=$(sshpass -p "$pwd" ssh sw100 cli -h '"enable" "show openflow flows"')
 num_rules=$(echo "$rules" | grep "in_port" | wc -l)
 if [[ $num_rules -ne 0 ]] && [[ $num_rules -ne 2 ]];

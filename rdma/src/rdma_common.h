@@ -59,7 +59,7 @@
 #define CQ_CAPACITY (2*MAX_WR)
 
 /* MAX SGE capacity (limited by "max_sge" dev attr which is 30 for CX-5s) */
-#define MAX_SGE (2)
+#define MAX_SGE (30)
 
 /* MAX outstnading READ/ATOMIC ops 
  * (limited by "max_qp_init_rd_atom" and "max_qp_rd_atom" device attrs) */
