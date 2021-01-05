@@ -213,7 +213,6 @@ for concur in 1 4 16 64; do
             exit 1
         fi
 
-        echo $datafile
         plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
         python ../tools/plot.py -d ${datafile} \
             -xc "sg pieces" -xl "num sg pieces"   \

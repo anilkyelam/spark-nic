@@ -772,9 +772,9 @@ static double measure_xput(
 
 /* Data transfer modes */
 enum data_transfer_mode { 
-    DTR_MODE_ONE_BUFFER,                    // Assume that data is already gathered in a single big buffer
-    DTR_MODE_ONE_BUFFER_WITH_CPU_COPY,      // Assume that data is scattered but is gathered by CPU into a single big buffer
-    DTR_MODE_GATHER,                        // Assume that data is scattered but is gathered by NIC with a scatter-gather op
+    DTR_MODE_NO_GATHER,         // Assume that data is already gathered in a single big buffer
+    DTR_MODE_CPU_GATHER,        // Assume that data is scattered but is gathered by CPU into a single big buffer before xmit
+    DTR_MODE_NIC_GATHER,        // Assume that data is scattered but is gathered by NIC with a scatter-gather op during xmit
 };
 
 /* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
@@ -852,6 +852,11 @@ static double measure_xput_scatgath(
             mr_buffers[i]->addr, mr_buffers[i]->length, mr_buffers[i]->handle, mr_buffers[i]->lkey, mr_buffers[i]->rkey);
     }
 
+    /* For sanity check, fill the scattered source buffers with different alphabets in each message. 
+     * We can verify this by reading the server buffer later. Only works for RDMA WRITEs though */
+    for (i = 0; i < num_concur; i++)
+        for (j = 0; j < num_mr_bufs; j++)
+            memset(mr_buffers[j]->addr + (i*sg_piece_size), 'a' + i%26, sg_piece_size);
 
     /* Pre-Prepare SGE lists and WRs for the big buffer for different concurrent requests */
     struct ibv_send_wr big_buf_wrs[num_concur];
@@ -914,13 +919,21 @@ static double measure_xput_scatgath(
     for (i = 0; i < num_concur; i++) {
 
         /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
-        if (dtr_mode == DTR_MODE_ONE_BUFFER_WITH_CPU_COPY) {
+        if (dtr_mode == DTR_MODE_CPU_GATHER) {
             for (j = 0; j < num_mr_bufs; j++) {
-                memcpy((void*)src_sge_arr[i][j].addr, (void*)big_buf_sge[i].addr, src_sge_arr[i][j].length);
+                memcpy(
+                    (void*)(big_buf_sge[i].addr + j*sg_piece_size),     // to: big buffer at position of j-th piece
+                    (void*)src_sge_arr[i][j].addr,                      // from: scattered data piece number j
+                    src_sge_arr[i][j].length
+                );
             }
         }
 
-        struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_GATHER ? &src_buf_wrs[i] : &big_buf_wrs[i];
+        /* Use this snippet to print a mem buffer while debugging */
+        // *((char*)one_big_buffer->addr + big_buf_size - 1) = '\0';
+        // printf("%s\n", (char*)one_big_buffer->addr); 
+
+        struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_NIC_GATHER ? &src_buf_wrs[i] : &big_buf_wrs[i];
         ret = ibv_post_send(client_qp, 
                 wr_to_send,
                 &bad_client_send_wr);
@@ -983,7 +996,17 @@ static double measure_xput_scatgath(
             if (!stop_posting) {
                 /* Issue another request that reads/writes from same locations as the completed one */
                 int idx = wc[i].wr_id;
-                struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_GATHER ? &src_buf_wrs[idx] : &big_buf_wrs[idx];
+                
+                /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
+                if (dtr_mode == DTR_MODE_CPU_GATHER) {
+                    memcpy(
+                        (void*)(big_buf_sge[idx].addr + j*sg_piece_size),     // to: big buffer at position of j-th piece
+                        (void*)src_sge_arr[idx][j].addr,                      // from: scattered data piece number j
+                        src_sge_arr[idx][j].length
+                    );
+                }
+
+                struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_NIC_GATHER ? &src_buf_wrs[idx] : &big_buf_wrs[idx];
                 ret = ibv_post_send(client_qp, 
                     wr_to_send,
                     &bad_client_send_wr);
@@ -1007,7 +1030,54 @@ static double measure_xput_scatgath(
     /* Similar to connection management events, we need to acknowledge CQ events */
     ibv_ack_cq_events(cq_ptr, 1 /* we received one event notification. This is not number of WC elements */);
 
-    /* TODO: Don't ignore sanity check! */
+    /* SANITY CHECK */
+    /* In case of RDMA writes, perform a sanity check by reading the server-side buffer and checking its content */
+    if (rdma_op == RDMA_WRITE_OP && dtr_mode != DTR_MODE_NO_GATHER) {
+        /* Clear the local buffer and issue a big read */
+        memset(one_big_buffer->addr, 0, num_concur * msg_size); 
+
+        /* Now we prepare a READ using same variables but for destination */
+        client_send_sge.addr = (uint64_t) one_big_buffer->addr;
+        client_send_sge.length = (uint32_t) msg_size * num_concur;           // entire buffer
+        client_send_sge.lkey = one_big_buffer->lkey;
+        /* now we link to the send work request */
+        bzero(&client_send_wr, sizeof(client_send_wr));
+        client_send_wr.sg_list = &client_send_sge;
+        client_send_wr.num_sge = 1;
+        client_send_wr.opcode = IBV_WR_RDMA_READ;
+        client_send_wr.send_flags = IBV_SEND_SIGNALED;
+        /* we have to tell server side info for RDMA */
+        client_send_wr.wr.rdma.rkey = server_metadata_attr.stag.remote_stag;
+        client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address;
+        /* Now we post it */
+        ret = ibv_post_send(client_qp, 
+                &client_send_wr,
+                &bad_client_send_wr);
+        if (ret) {
+            rdma_error("Failed to read client dst buffer from the master, errno: %d \n", -errno);
+            return -errno;
+        }
+        /* at this point we are expecting 1 work completion for the read */
+        ret = process_work_completion_events(io_completion_channel, wc, 1);
+        if(ret != 1 || wc->opcode != IBV_WC_RDMA_READ) {
+            rdma_error("We failed to get 1 work completion for the sanity check read, ret = %d \n",ret);
+            return ret;
+        }
+
+        /* Validate the buffer */
+        char* expected = (char*) malloc(msg_size * sizeof(char));
+        for (i = 0; i < num_concur; i++) {
+            memset(expected, 'a' + i%26, msg_size);
+            if (strncmp(expected, (char*) one_big_buffer->addr + (i*msg_size), msg_size) != 0) {
+                printf("%d\n", strncmp(expected, (char*) one_big_buffer->addr + (i*msg_size), msg_size));
+                rdma_error("Sanity check failed. \nBuffer read from server does not contain expected data at msg index: %d.\n\
+                    Expected: %.*s \n\
+                    Actual: %.*s \n", i+1, msg_size, expected, msg_size, (char*) one_big_buffer->addr + (i*msg_size));
+                return 1;
+            }
+        }
+        debug("SANITY check complete!\n");
+    }
 
     /* Deregister local MRs */
     for (i = 0; i < num_mr_bufs; i++)
@@ -1348,17 +1418,15 @@ int main(int argc, char **argv) {
             printf("=========== Xput =============\n");
             printf("msg size,window size,sg pieces,base_ops,base_gbps,cpu_gather_ops,cpu_gather_gpbs,nic_gather_ops,nic_gather_gbps\n");
 
-            int num_pieces = 1;
-            // min_msg_size = max_msg_size = 1024;
-
+            int num_pieces;
             for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
                 for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) 
                     for (num_pieces = 1; num_pieces < MAX_SGE; num_pieces *= 2) {
-                        double mode1_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_ONE_BUFFER);
+                        double mode1_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER);
                         double mode1_gbps = mode1_ops * msg_size * 8 / 1e9;
-                        double mode2_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_ONE_BUFFER_WITH_CPU_COPY);
+                        double mode2_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER);
                         double mode2_gbps = mode2_ops * msg_size * 8 / 1e9;
-                        double mode3_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_GATHER);
+                        double mode3_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER);
                         double mode3_gbps = mode3_ops * msg_size * 8 / 1e9;
                         printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_pieces, 
                             mode1_ops, mode1_gbps, mode2_ops, mode2_gbps, mode3_ops, mode3_gbps);
