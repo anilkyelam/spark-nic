@@ -199,11 +199,11 @@ fi
 #================================================================#
 
 # # RDMA read/write xput plots for various data transfer modes
-# # (changing payload size for various window sizes FIXME)
-# # (relevant runs: , )
+# # (changing number of scatter-gather pieces per payload)
 vary=0
-for concur in 1 4 16 64; do
-    for msgsize in 64 128 256 512 1024 2048 4096; do 
+# for concur in 1 4 16 64; do   for msgsize in 64 128 256 512 1024 2048 4096; do        # (runs 01-04-23-40 and earlier)
+# for concur in 128; do           for msgsize in 64 128 256 512 720 1024 2048; do         # (run: 01-08-23-39) 
+for concur in 128; do           for msgsize in 1440; do                                 # (run: 01-09-17-22) 
         echo "Running xput with $msgsize B msg size for window sizes $concur"; 
         datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
         if [[ $REGEN ]]; then
@@ -219,8 +219,9 @@ for concur in 1 4 16 64; do
             -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
             -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
             -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
+            -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
             --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-            -o ${plotfile} -of ${PLOTEXT}  -fs 11
+            -o ${plotfile} -of ${PLOTEXT}  -fs 9 
         display ${plotfile} &
     done
 done

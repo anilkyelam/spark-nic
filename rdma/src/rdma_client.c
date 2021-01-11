@@ -775,6 +775,7 @@ enum data_transfer_mode {
     DTR_MODE_NO_GATHER,         // Assume that data is already gathered in a single big buffer
     DTR_MODE_CPU_GATHER,        // Assume that data is scattered but is gathered by CPU into a single big buffer before xmit
     DTR_MODE_NIC_GATHER,        // Assume that data is scattered but is gathered by NIC with a scatter-gather op during xmit
+    DTR_MODE_PIECE_BY_PIECE,    // Assume that data is scattered but each piece is sent in a different rdma write op
 };
 
 /* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
@@ -818,6 +819,22 @@ static double measure_xput_scatgath(
     assert(num_sg_pieces <= MAX_SGE);                   
     assert(msg_size % num_sg_pieces == 0);              /* that msg size splits into equal parts */
     uint32_t sg_piece_size = msg_size / num_sg_pieces;
+
+    /* If sending each piece in a separate op, the scenario is equivalent to just measuring xput 
+     * for msg_size = piece_size (assuming that we split the original payload into equal-sized 
+     * pieces *and* that we are running on a single core and no specific ordering is attached to 
+     * transmitting these pieces i.e., concurrency is determined solely by num_concur: the max 
+     * max number of requests allowed in flight). But of course, the returned throughput (ops/sec)
+     * is divided by number of pieces per message because in this method, an operation represents 
+     * sending the whole payload, not just one of its pieces. */
+    if (dtr_mode == DTR_MODE_PIECE_BY_PIECE)
+        return measure_xput(
+            sg_piece_size,
+            num_concur,
+            rdma_op,
+            MR_MODE_PRE_REGISTER_WITH_ROTATE,
+            num_sg_pieces
+        ) / num_sg_pieces;
 
     /* One big buffer to hold aggregated payloads (times the num of requests in flight) */
     size_t big_buf_size = msg_size * num_concur;
@@ -1413,26 +1430,30 @@ int main(int argc, char **argv) {
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,window size,sg pieces,base_ops,base_gbps,cpu_gather_ops,cpu_gather_gpbs,nic_gather_ops,nic_gather_gbps\n");
+                fprintf(fptr, "msg size,window size,sg pieces,base_ops,base_gbps,cpu_gather_ops,cpu_gather_gpbs,nic_gather_ops,nic_gather_gbps,piece_by_piece_ops,piece_by_piece_gbps\n");
             }
             printf("=========== Xput =============\n");
-            printf("msg size,window size,sg pieces,base_ops,base_gbps,cpu_gather_ops,cpu_gather_gpbs,nic_gather_ops,nic_gather_gbps\n");
+            printf("msg size,window size,sg pieces,base_ops,base_gbps,cpu_gather_ops,cpu_gather_gpbs,nic_gather_ops,nic_gather_gbps,piece_by_piece_ops,piece_by_piece_gbps\n");
 
             int num_pieces;
             for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
                 for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) 
-                    for (num_pieces = 1; num_pieces < MAX_SGE; num_pieces *= 2) {
+                    for (num_pieces = 1; num_pieces < MAX_SGE; num_pieces++) {
+                        if (msg_size % num_pieces != 0)     // Only consider factors
+                            continue;
                         double mode1_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER);
                         double mode1_gbps = mode1_ops * msg_size * 8 / 1e9;
                         double mode2_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER);
                         double mode2_gbps = mode2_ops * msg_size * 8 / 1e9;
                         double mode3_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER);
                         double mode3_gbps = mode3_ops * msg_size * 8 / 1e9;
-                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_pieces, 
-                            mode1_ops, mode1_gbps, mode2_ops, mode2_gbps, mode3_ops, mode3_gbps);
+                        double mode4_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_PIECE_BY_PIECE);
+                        double mode4_gbps = mode4_ops * msg_size * 8 / 1e9;
+                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_pieces, 
+                            mode1_ops, mode1_gbps, mode2_ops, mode2_gbps, mode3_ops, mode3_gbps, mode4_ops, mode4_gbps);
                         if (write_to_file) {
-                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_pieces,
-                                mode1_ops, mode1_gbps, mode2_ops, mode2_gbps, mode3_ops, mode3_gbps);
+                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, 
+                                num_pieces, mode1_ops, mode1_gbps, mode2_ops, mode2_gbps, mode3_ops, mode3_gbps, mode4_ops, mode4_gbps);
                             fflush(fptr);
                         }
                 }
