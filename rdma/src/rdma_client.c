@@ -33,7 +33,6 @@ static char *src = NULL, *dst = NULL;
 
 /* Rdtsc blocks for time measurements */
 unsigned cycles_low, cycles_high, cycles_low1, cycles_high1;
-
 static __inline__ unsigned long long rdtsc(void)
 {
    __asm__ __volatile__ ("RDTSC\n\t"
@@ -49,6 +48,24 @@ static __inline__ unsigned long long rdtsc1(void)
             "mov %%eax, %1\n\t": "=r" (cycles_high1), "=r" (cycles_low1)::
             "%rax", "rbx", "rcx", "rdx");
 }
+
+unsigned xcycles_low, xcycles_high, xcycles_low1, xcycles_high1;
+static __inline__ unsigned long long xrdtsc(void)
+{
+   __asm__ __volatile__ ("RDTSC\n\t"
+            "mov %%edx, %0\n\t"
+            "mov %%eax, %1\n\t": "=r" (xcycles_high), "=r" (xcycles_low)::
+            "%rax", "rbx", "rcx", "rdx");
+}
+
+static __inline__ unsigned long long xrdtsc1(void)
+{
+   __asm__ __volatile__ ("RDTSC\n\t"
+            "mov %%edx, %0\n\t"
+            "mov %%eax, %1\n\t": "=r" (xcycles_high1), "=r" (xcycles_low1)::
+            "%rax", "rbx", "rcx", "rdx");
+}
+
 
 /* This is our testing function */
 static int check_src_dst() 
@@ -790,6 +807,7 @@ static double measure_xput_scatgath(
     int ret = -1, n, i, j;
     struct ibv_wc* wc;
     uint64_t start_cycles, end_cycles;
+    uint64_t xstart_cycles, xend_cycles;
     struct timeval      start, end;
     struct ibv_cq *cq_ptr = NULL;
     void *context = NULL;
@@ -980,14 +998,23 @@ static double measure_xput_scatgath(
     const uint64_t minimum_duration_secs = 10;  /* number of seconds to run the experiment for at least */
     const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
     int stop_posting = 0;
+    uint64_t count = 0;
     wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
     do {
         /* Poll the completion queue for the completion event for the earlier write */
         do {
+            xrdtsc();
             n = ibv_poll_cq(cq_ptr, num_concur, wc);       // get upto num_concur entries
+            xrdtsc1();
             if (n < 0) {
                 rdma_error("Failed to poll cq for wc due to %d \n", ret);
                 return ret;     /* ret is errno here */
+            }
+            count++;
+            if (count % 100000 == 0) {
+                xstart_cycles = ( ((int64_t)xcycles_high << 32) | xcycles_low );
+                xend_cycles = ( ((int64_t)xcycles_high1 << 32) | xcycles_low1 );
+                printf("%d, %lu\n", n, (xend_cycles - xstart_cycles));
             }
         } while (n < 1);
 
