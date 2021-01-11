@@ -480,6 +480,16 @@ static int client_remote_memory_ops()
     return 0;
 }
 
+
+typedef struct {
+    double err_code;
+    double xput_ops;
+    double xput_bps;
+    double cq_poll_time_percent;        // in cpu cycles
+    double cq_poll_count;
+    double cq_empty_count;
+} result_t;
+
 /* List of ops that are being instrumented */
 enum rdma_measured_op { RDMA_READ_OP, RDMA_WRITE_OP };
 enum mem_reg_mode { 
@@ -490,7 +500,7 @@ enum mem_reg_mode {
 
 /* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
 /* Returns xput in ops/sec */
-static double measure_xput(
+static result_t measure_xput(
     uint32_t msg_size,                  // payload size
     int num_concur,                     // number of requests in flight; use 1 for RTT measurements
     enum rdma_measured_op rdma_op,      // rdma op to use i.e., read or write
@@ -500,11 +510,13 @@ static double measure_xput(
     int ret = -1, n, i;
     struct ibv_wc* wc;
     uint64_t start_cycles, end_cycles;
+    uint64_t xstart_cycles, xend_cycles;
     struct timeval      start, end;
     struct ibv_cq *cq_ptr = NULL;
     void *context = NULL;
     struct ibv_mr **mr_buffers = NULL;           /* Make sure to deregister these local MRs before exiting */
     struct ibv_mr *tmpbuffer = NULL;
+    result_t result;
     
     /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
      * is very less; while there is no such limit for WRITES. The connection parameters initiator_depth
@@ -514,13 +526,15 @@ static double measure_xput(
     if (rdma_op == RDMA_READ_OP && num_concur > MAX_RD_AT_IN_FLIGHT) {
         rdma_error("Device cannot support more than %d outstnading READs (num_concur=%d)\n", 
             MAX_RD_AT_IN_FLIGHT, num_concur);
-        return -EOVERFLOW;
+        result.err_code = -EOVERFLOW;
+        return result;
     }
 
     num_lbuffers = (mr_mode == MR_MODE_PRE_REGISTER_WITH_ROTATE) ? num_lbuffers : 1;
     if (num_lbuffers <= 0) {
         rdma_error("Invalid number of client-side buffers provided: %d\n", num_lbuffers);
-        return -EINVAL;
+        result.err_code = -EINVAL;
+        return result; 
     }
 
     /* Allocate client buffers to read/write from (use the same piece of underlying memory) */
@@ -533,7 +547,8 @@ static double measure_xput(
             IBV_ACCESS_REMOTE_READ));
     if (!mr_buffers[0]) {
         rdma_error("We failed to create the destination buffer, -ENOMEM\n");
-        return -ENOMEM;
+        result.err_code = -ENOMEM;
+        return result;
     }
     debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", 0,
         mr_buffers[0]->addr, mr_buffers[0]->length, mr_buffers[0]->handle, mr_buffers[0]->lkey, mr_buffers[0]->rkey);
@@ -555,7 +570,8 @@ static double measure_xput(
 
             if (!mr_buffers[i]) {
                 rdma_error("Registering buffer %d failed\n", i);
-                return -ENOMEM;
+                result.err_code = -ENOMEM;
+                return result;
             }
             
             debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", i,
@@ -602,7 +618,8 @@ static double measure_xput(
                 &bad_client_send_wr);
         if (ret) {
             rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-            return -errno;
+            result.err_code = -errno;
+            return result;
         }
         	
         wr_posted++;
@@ -630,29 +647,40 @@ static double measure_xput(
     ret = ibv_get_cq_event(io_completion_channel, &cq_ptr, &context);
     if (ret) {
         rdma_error("Failed to get next CQ event due to %d \n", -errno);
-        return -errno;
+        result.err_code = -errno;
+        return result;
     }
 
     /* Request for more notifications. */
     ret = ibv_req_notify_cq(cq_ptr, 0);
     if (ret) {
         rdma_error("Failed to request further notifications %d \n", -errno);
-        return -errno;
+        result.err_code = -errno;
+        return result;
     }
 
     const uint64_t minimum_duration_secs = 10;  /* number of seconds to run the experiment for at least */
     const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
     int stop_posting = 0;
+    uint64_t poll_time = 0, poll_count = 0, idle_count = 0;
     wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
     do {
         /* Poll the completion queue for the completion event for the earlier write */
+        xrdtsc();
         do {
             n = ibv_poll_cq(cq_ptr, num_concur, wc);       // get upto num_concur entries
             if (n < 0) {
                 rdma_error("Failed to poll cq for wc due to %d \n", ret);
-                return ret;     /* ret is errno here */
+                result.err_code = ret;     /* ret is errno here */
+                return result;
             }
+            poll_count++;
+            if (n == 0)     idle_count++;
         } while (n < 1);
+        xrdtsc1();
+        xstart_cycles = ( ((int64_t)xcycles_high << 32) | xcycles_low );
+        xend_cycles = ( ((int64_t)xcycles_high1 << 32) | xcycles_low1 );
+        poll_time += (xend_cycles - xstart_cycles);
 
         /* For each completed request */
         for (i = 0; i < n; i++) {
@@ -660,7 +688,8 @@ static double measure_xput(
             if (wc[i].status != IBV_WC_SUCCESS) {
                 rdma_error("Work completion (WC) has error status: %d, %s at index %ld",  
                     wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].wr_id);
-                return -(wc[i].status);       /* return negative value */
+                result.err_code =  -(wc[i].status);       /* return negative value */
+                return result;
             }
 
             /* Is it time to look at the watch? */
@@ -686,7 +715,8 @@ static double measure_xput(
                         &bad_client_send_wr);
                 if (ret) {
                     rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-                    return -errno;
+                    result.err_code = -errno;
+                    return result;
                 }
                 wr_posted++;
                 buf_num     = (buf_num++) % num_lbuffers;
@@ -745,13 +775,15 @@ static double measure_xput(
                 &bad_client_send_wr);
         if (ret) {
             rdma_error("Failed to read client dst buffer from the master, errno: %d \n", -errno);
-            return -errno;
+            result.err_code = -errno;
+            return result;
         }
         /* at this point we are expecting 1 work completion for the read */
         ret = process_work_completion_events(io_completion_channel, wc, 1);
         if(ret != 1 || wc->opcode != IBV_WC_RDMA_READ) {
             rdma_error("We failed to get 1 work completion for the sanity check read, ret = %d \n",ret);
-            return ret;
+            result.err_code = ret;
+            return result;
         }
 
         /* Validate the buffer */
@@ -763,7 +795,8 @@ static double measure_xput(
                 rdma_error("Sanity check failed. \nBuffer read from server does not contain expected data at msg index: %d.\n\
                     Expected: %.*s \n\
                     Actual: %.*s \n", i+1, msg_size, expected, msg_size, (char*) mr_buffers[0]->addr + (i*msg_size));
-                return 1;
+                result.err_code = 1;
+                return result;
             }
         }
         debug("SANITY check complete!\n");
@@ -784,7 +817,14 @@ static double measure_xput(
     double goodput_pps = wr_acked / duration_ctime;
     double goodput_bps = goodput_pps * msg_size * 8;
     debug("Goodput = %.2lf Gbps. Sampled for %.2lf seconds\n", goodput_bps / 1e9, duration_ctime);
-    return goodput_pps;
+    
+    /* Fill in result */
+    result.xput_bps = goodput_bps / 1e9;
+    result.xput_ops = goodput_pps;
+    result.cq_poll_time_percent = poll_time * 100.0 / CPU_FREQ / duration_rdtsc;
+    result.cq_poll_count = poll_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
+    result.cq_empty_count = idle_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
+    return result;
 }
 
 /* Data transfer modes */
@@ -797,7 +837,7 @@ enum data_transfer_mode {
 
 /* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
 /* Returns xput in ops/sec */
-static double measure_xput_scatgath(
+static result_t measure_xput_scatgath(
     uint32_t msg_size,                  // payload size
     uint32_t num_sg_pieces,            // number of scatter-gather pieces
     int num_concur,                     // number of requests in flight; use 1 for RTT measurements
@@ -812,6 +852,7 @@ static double measure_xput_scatgath(
     struct ibv_cq *cq_ptr = NULL;
     void *context = NULL;
     int num_mr_bufs;
+    result_t result;
     
     struct ibv_mr **mr_buffers = NULL;           /* Make sure to deregister these local MRs before exiting */
     struct ibv_mr *one_big_buffer = NULL;       /* Make sure to deregister these local MRs before exiting */
@@ -819,7 +860,8 @@ static double measure_xput_scatgath(
     if (rdma_op != RDMA_WRITE_OP) {
         /* Only write ops supported for now */
         rdma_error("only write supported for scatter-gather ops\n");
-        return -EINVAL; 
+        result.err_code = -EINVAL;
+        return result; 
     }
 
     /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
@@ -830,7 +872,8 @@ static double measure_xput_scatgath(
     if (rdma_op == RDMA_READ_OP && num_concur > MAX_RD_AT_IN_FLIGHT) {
         rdma_error("Device cannot support more than %d outstnading READs (num_concur=%d)\n", 
             MAX_RD_AT_IN_FLIGHT, num_concur);
-        return -EOVERFLOW;
+        result.err_code = -EOVERFLOW;
+        return result;
     }
 
     /* Some constraints on payload and scatter-gather piece sizes */
@@ -845,14 +888,16 @@ static double measure_xput_scatgath(
      * max number of requests allowed in flight). But of course, the returned throughput (ops/sec)
      * is divided by number of pieces per message because in this method, an operation represents 
      * sending the whole payload, not just one of its pieces. */
-    if (dtr_mode == DTR_MODE_PIECE_BY_PIECE)
-        return measure_xput(
+    if (dtr_mode == DTR_MODE_PIECE_BY_PIECE) {
+        result = measure_xput(
             sg_piece_size,
             num_concur,
             rdma_op,
             MR_MODE_PRE_REGISTER_WITH_ROTATE,
-            num_sg_pieces
-        ) / num_sg_pieces;
+            num_sg_pieces);
+        result.xput_ops /= num_sg_pieces;
+        return result;
+    }
 
     /* One big buffer to hold aggregated payloads (times the num of requests in flight) */
     size_t big_buf_size = msg_size * num_concur;
@@ -863,7 +908,8 @@ static double measure_xput_scatgath(
             IBV_ACCESS_REMOTE_READ));
     if (!one_big_buffer) {
         rdma_error("Failed to create the big source buffer, -ENOMEM\n");
-        return -ENOMEM;
+        result.err_code = -ENOMEM;
+        return result;
     }
     debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", 0,
         one_big_buffer->addr, one_big_buffer->length, one_big_buffer->handle, one_big_buffer->lkey, one_big_buffer->rkey);
@@ -881,7 +927,8 @@ static double measure_xput_scatgath(
                 IBV_ACCESS_REMOTE_READ));
         if (!mr_buffers[i]) {
             rdma_error("We failed to create the destination buffer, -ENOMEM\n");
-            return -ENOMEM;
+            result.err_code = -ENOMEM;
+            return result;
         }
         debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", 0,
             mr_buffers[i]->addr, mr_buffers[i]->length, mr_buffers[i]->handle, mr_buffers[i]->lkey, mr_buffers[i]->rkey);
@@ -974,7 +1021,8 @@ static double measure_xput_scatgath(
                 &bad_client_send_wr);
         if (ret) {
             rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-            return -errno;
+            result.err_code = -errno;
+            return result;
         }
         	
         wr_posted++;
@@ -985,38 +1033,40 @@ static double measure_xput_scatgath(
     ret = ibv_get_cq_event(io_completion_channel, &cq_ptr, &context);
     if (ret) {
         rdma_error("Failed to get next CQ event due to %d \n", -errno);
-        return -errno;
+        result.err_code = -errno;
+        return result;
     }
 
     /* Request for more notifications. */
     ret = ibv_req_notify_cq(cq_ptr, 0);
     if (ret) {
         rdma_error("Failed to request further notifications %d \n", -errno);
-        return -errno;
+        result.err_code = -errno;
+        return result;
     }
 
     const uint64_t minimum_duration_secs = 10;  /* number of seconds to run the experiment for at least */
     const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
     int stop_posting = 0;
-    uint64_t count = 0;
+    uint64_t poll_time = 0, poll_count = 0, idle_count = 0;
     wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
     do {
         /* Poll the completion queue for the completion event for the earlier write */
+        xrdtsc();
         do {
-            xrdtsc();
             n = ibv_poll_cq(cq_ptr, num_concur, wc);       // get upto num_concur entries
-            xrdtsc1();
             if (n < 0) {
                 rdma_error("Failed to poll cq for wc due to %d \n", ret);
-                return ret;     /* ret is errno here */
-            }
-            count++;
-            if (count % 100000 == 0) {
-                xstart_cycles = ( ((int64_t)xcycles_high << 32) | xcycles_low );
-                xend_cycles = ( ((int64_t)xcycles_high1 << 32) | xcycles_low1 );
-                printf("%d, %lu\n", n, (xend_cycles - xstart_cycles));
-            }
+                result.err_code = ret;     /* ret is errno here */
+                return result;
+            } 
+            poll_count++;
+            if (n == 0)     idle_count++;
         } while (n < 1);
+        xrdtsc1();
+        xstart_cycles = ( ((int64_t)xcycles_high << 32) | xcycles_low );
+        xend_cycles = ( ((int64_t)xcycles_high1 << 32) | xcycles_low1 );
+        poll_time += (xend_cycles - xstart_cycles);
 
         /* For each completed request */
         for (i = 0; i < n; i++) {
@@ -1024,7 +1074,8 @@ static double measure_xput_scatgath(
             if (wc[i].status != IBV_WC_SUCCESS) {
                 rdma_error("Work completion (WC) has error status: %d, %s at index %ld",  
                     wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].wr_id);
-                return -(wc[i].status);       /* return negative value */
+                result.err_code =  -(wc[i].status);       /* return negative value */
+                return result;
             }
 
             /* Is it time to look at the watch? */
@@ -1056,7 +1107,8 @@ static double measure_xput_scatgath(
                     &bad_client_send_wr);
                 if (ret) {
                     rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-                    return -errno;
+                    result.err_code = -errno;
+                    return result;
                 }
                 wr_posted++;
             }
@@ -1099,13 +1151,15 @@ static double measure_xput_scatgath(
                 &bad_client_send_wr);
         if (ret) {
             rdma_error("Failed to read client dst buffer from the master, errno: %d \n", -errno);
-            return -errno;
+            result.err_code = -errno;
+            return result;
         }
         /* at this point we are expecting 1 work completion for the read */
         ret = process_work_completion_events(io_completion_channel, wc, 1);
         if(ret != 1 || wc->opcode != IBV_WC_RDMA_READ) {
             rdma_error("We failed to get 1 work completion for the sanity check read, ret = %d \n",ret);
-            return ret;
+            result.err_code = ret;
+            return result;
         }
 
         /* Validate the buffer */
@@ -1117,7 +1171,8 @@ static double measure_xput_scatgath(
                 rdma_error("Sanity check failed. \nBuffer read from server does not contain expected data at msg index: %d.\n\
                     Expected: %.*s \n\
                     Actual: %.*s \n", i+1, msg_size, expected, msg_size, (char*) one_big_buffer->addr + (i*msg_size));
-                return 1;
+                result.err_code = 1;
+                return result;
             }
         }
         debug("SANITY check complete!\n");
@@ -1139,7 +1194,15 @@ static double measure_xput_scatgath(
     double goodput_pps = wr_acked / duration_ctime;
     double goodput_bps = goodput_pps * msg_size * 8;
     debug("Goodput = %.2lf Gbps. Sampled for %.2lf seconds\n", goodput_bps / 1e9, duration_ctime);
-    return goodput_pps;
+    debug("Poll CQ time (cycles) and poll count per window: %lf, %lf\n", poll_time * 100.0 / CPU_FREQ / duration_rdtsc, poll_count * num_concur *1.0 / wr_acked);
+
+    /* Fill in result */
+    result.xput_bps = goodput_bps / 1e9;
+    result.xput_ops = goodput_pps;
+    result.cq_poll_time_percent = poll_time * 100.0 / CPU_FREQ / duration_rdtsc;
+    result.cq_poll_count = poll_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
+    result.cq_empty_count = idle_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
+    return result;
 }
 
 
@@ -1409,8 +1472,8 @@ int main(int argc, char **argv) {
             printf("=========== RTTs =============\n");
             printf("msg size,write,read\n");
             for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += msg_size_incr) {
-                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
-                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
+                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf).xput_ops;
+                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf).xput_ops;
                 printf("%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
                 if (write_to_file) {
                     fprintf(fptr, "%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
@@ -1431,20 +1494,25 @@ int main(int argc, char **argv) {
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,window size,mbufs,write_ops,write_gbps,read_ops,read_gbps\n");
+                fprintf(fptr, "msg size,window size,mbufs,write_ops,write_gbps,read_ops,read_gbps,write_pp,write_pcq,write_ecq\n");
             }
             printf("=========== Xput =============\n");
-            printf("msg size,window size,mbufs,write_ops,write_gbps,read_ops,read_gbps\n");
+            printf("msg size,window size,mbufs,write_ops,write_gbps,read_ops,read_gbps,write_pp,write_pcq,write_ecq\n");
             for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
                 for (num_mbuf = min_num_mbuf; num_mbuf <= max_num_mbuf; num_mbuf += 500)    // FIXME
                     for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) {
-                        double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
-                        double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf) : 0;
-                        double wput_gbps = wput_ops * msg_size * 8 / 1e9;
+                        result_t wput = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
+                        double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf).xput_ops : 0;
                         double rput_gbps = rput_ops * msg_size * 8 / 1e9;
-                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_mbuf, wput_ops, wput_gbps, rput_ops, rput_gbps);
+                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
+                            msg_size, num_concur, num_mbuf, wput.xput_ops, wput.xput_bps, 
+                            rput_ops, rput_gbps, 
+                            wput.cq_poll_time_percent, wput.cq_poll_count, wput.cq_empty_count);
                         if (write_to_file) {
-                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_mbuf, wput_ops, wput_gbps, rput_ops, rput_gbps);
+                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
+                                msg_size, num_concur, num_mbuf, wput.xput_ops, wput.xput_bps,
+                                rput_ops, rput_gbps, 
+                                wput.cq_poll_time_percent, wput.cq_poll_count, wput.cq_empty_count);
                             fflush(fptr);
                         }
                     }
@@ -1457,30 +1525,41 @@ int main(int argc, char **argv) {
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,window size,sg pieces,base_ops,base_gbps,cpu_gather_ops,cpu_gather_gpbs,nic_gather_ops,nic_gather_gbps,piece_by_piece_ops,piece_by_piece_gbps\n");
+                fprintf(fptr, "msg size,window size,sg pieces,"
+                    "base_ops,base_gbps,base_pp,base_pcq,base_ecq,"
+                    "cpu_gather_ops,cpu_gather_gpbs,cpu_gather_pp,cpu_gather_pcq,cpu_gather_ecq,"
+                    "nic_gather_ops,nic_gather_gbps,nic_gather_pp,nic_gather_pcq,nic_gather_ecq,"
+                    "piece_by_piece_ops,piece_by_piece_gbps,piece_by_piece_pp,piece_by_piece_pcq,piece_by_piece_ecq\n");
             }
             printf("=========== Xput =============\n");
-            printf("msg size,window size,sg pieces,base_ops,base_gbps,cpu_gather_ops,cpu_gather_gpbs,nic_gather_ops,nic_gather_gbps,piece_by_piece_ops,piece_by_piece_gbps\n");
-
+            printf("msg size,window size,sg pieces,"
+                "base_ops,base_gbps,base_pp,base_pcq,base_ecq,"
+                "cpu_gather_ops,cpu_gather_gpbs,cpu_gather_pp,cpu_gather_pcq,cpu_gather_ecq,"
+                "nic_gather_ops,nic_gather_gbps,nic_gather_pp,nic_gather_pcq,nic_gather_ecq,"
+                "piece_by_piece_ops,piece_by_piece_gbps,piece_by_piece_pp,piece_by_piece_pcq,piece_by_piece_ecq\n");
             int num_pieces;
             for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
                 for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) 
                     for (num_pieces = 1; num_pieces < MAX_SGE; num_pieces++) {
                         if (msg_size % num_pieces != 0)     // Only consider factors
                             continue;
-                        double mode1_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER);
-                        double mode1_gbps = mode1_ops * msg_size * 8 / 1e9;
-                        double mode2_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER);
-                        double mode2_gbps = mode2_ops * msg_size * 8 / 1e9;
-                        double mode3_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER);
-                        double mode3_gbps = mode3_ops * msg_size * 8 / 1e9;
-                        double mode4_ops = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_PIECE_BY_PIECE);
-                        double mode4_gbps = mode4_ops * msg_size * 8 / 1e9;
-                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, num_pieces, 
-                            mode1_ops, mode1_gbps, mode2_ops, mode2_gbps, mode3_ops, mode3_gbps, mode4_ops, mode4_gbps);
+                        result_t mode1 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER);
+                        result_t mode2 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER);
+                        result_t mode3 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER);
+                        result_t mode4 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_PIECE_BY_PIECE);
+                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
+                            msg_size, num_concur, num_pieces, 
+                            mode1.xput_ops, mode1.xput_bps, mode1.cq_poll_time_percent, mode1.cq_poll_count, mode1.cq_empty_count, 
+                            mode2.xput_ops, mode2.xput_bps, mode2.cq_poll_time_percent, mode2.cq_poll_count, mode2.cq_empty_count, 
+                            mode3.xput_ops, mode3.xput_bps, mode3.cq_poll_time_percent, mode3.cq_poll_count, mode3.cq_empty_count, 
+                            mode4.xput_ops, mode4.xput_bps, mode4.cq_poll_time_percent, mode4.cq_poll_count, mode4.cq_empty_count);
                         if (write_to_file) {
-                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, 
-                                num_pieces, mode1_ops, mode1_gbps, mode2_ops, mode2_gbps, mode3_ops, mode3_gbps, mode4_ops, mode4_gbps);
+                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
+                                msg_size, num_concur, num_pieces, 
+                                mode1.xput_ops, mode1.xput_bps, mode1.cq_poll_time_percent, mode1.cq_poll_count, mode1.cq_empty_count, 
+                                mode2.xput_ops, mode2.xput_bps, mode2.cq_poll_time_percent, mode2.cq_poll_count, mode2.cq_empty_count, 
+                                mode3.xput_ops, mode3.xput_bps, mode3.cq_poll_time_percent, mode3.cq_poll_count, mode3.cq_empty_count, 
+                                mode4.xput_ops, mode4.xput_bps, mode4.cq_poll_time_percent, mode4.cq_poll_count, mode4.cq_empty_count);
                             fflush(fptr);
                         }
                 }

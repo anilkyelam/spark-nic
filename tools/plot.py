@@ -60,8 +60,8 @@ class LegendLoc(Enum):
         if self.value == LegendLoc.rightin:    return 'right'
         if self.value == LegendLoc.center:     return 'center'
         if self.value == LegendLoc.topleft:    return 'topleft'
-        if self.value == LegendLoc.topout:     return 'upper center'
-        if self.value == LegendLoc.rightout:   return 'center left'
+        if self.value == LegendLoc.topout:     return 'lower center'
+        if self.value == LegendLoc.rightout:   return 'upper left'
 
     def __str__(self):
         return self.value
@@ -72,9 +72,11 @@ def set_axes_legend_loc(ax, lns, labels, loc, title=None):
     if loc in (LegendLoc.best, LegendLoc.rightin, LegendLoc.center, LegendLoc.topleft):
         ax.legend(lns, labels, loc=loc.matplotlib_loc(), ncol=1, fancybox=True, shadow=True, title=title)
     if loc == LegendLoc.topout:
-        ax.legend(lns, labels, loc=loc.matplotlib_loc(), bbox_to_anchor=(0.5, 1.05), ncol=3, fancybox=True, shadow=True, title=title)
+        ax.legend(lns, labels, loc=loc.matplotlib_loc(), bbox_to_anchor=(0.5, 1), ncol=2, 
+            fancybox=True, shadow=True, title=title)
     if loc == LegendLoc.rightout:
-        ax.legend(lns, labels, loc=loc.matplotlib_loc(), bbox_to_anchor=(1, 1), ncol=1, fancybox=True, shadow=True, title=title)
+        ax.legend(lns, labels, loc=loc.matplotlib_loc(), bbox_to_anchor=(1.05, 1), ncol=1, 
+            fancybox=True, shadow=True, title=title)
 
 
 class LineStyle(Enum):
