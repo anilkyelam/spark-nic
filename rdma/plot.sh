@@ -29,10 +29,6 @@ CUR_PATH=`realpath $0`
 DIR=$(dirname $CUR_PATH)
 DATADIR=${DIR}/data
 mkdir -p ${DATADIR}
-PLOTDIR=${DIR}/plots
-PLOTEXT=png                 # supported: png or pdf
-mkdir -p ${PLOTDIR} 
-
 
 # Figure out data location
 if [[ $REGEN ]]; then   
@@ -55,6 +51,10 @@ if [[ $README ]]; then
     echo "$README" >> $RUNDIR/readme
 fi
 
+# plots location
+PLOTDIR=${RUNDIR}/plots
+PLOTEXT=png                 # supported: png or pdf
+mkdir -p ${PLOTDIR} 
 
 # #
 # # START PLOTTING
@@ -232,68 +232,143 @@ fi
 # # RDMA read/write xput plots for various data transfer modes, ALONG WITH cpu usage (cq poll time)
 # # (changing number of scatter-gather pieces per payload)
 
-# # Cpu poll time as we increase window size for various message sizes
-# # This one is to illustrate CPU poll time as a potential indicator of CPU efficiency...
-vary=0
-for msgsize in 64 256 512 1024 2048; 
-do 
-    echo "Running xput with $msgsize B msg size for various window sizes"; 
-    datafile=${RUNDIR}/xput_pt_msgsize_${msgsize}
-    if [[ $REGEN ]]; then
-        bash run.sh -o="--xput -c ${vary} -m ${msgsize} -o ${datafile}"
-    elif [ ! -f $datafile ]; then
-        echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
-        exit 1
-    fi
-    files="$files -d ${datafile} -l ${msgsize}B"
-done
+# # # Cpu poll time as we increase window size for various message sizes
+# # # This one is to illustrate CPU poll time as a potential indicator of CPU efficiency...
+# vary=0
+# for msgsize in 64 256 512 1024 2048; 
+# do 
+#     echo "Running xput with $msgsize B msg size for various window sizes"; 
+#     datafile=${RUNDIR}/xput_pt_msgsize_${msgsize}
+#     if [[ $REGEN ]]; then
+#         bash run.sh -o="--xput -c ${vary} -m ${msgsize} -o ${datafile}"
+#     elif [ ! -f $datafile ]; then
+#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#         exit 1
+#     fi
+#     files="$files -d ${datafile} -l ${msgsize}B"
+# done
 
-plotfile=${PLOTDIR}/write_xput_ops_${runid}.${PLOTEXT}
-python ../tools/plot.py $files                          \
-    -xc "window size" -xl "outstanding requests"        \
-    -yc "write_ops" -yl "million ops/sec"  --ymul 1e-6  \
-    -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
-display ${plotfile} &
+# plotfile=${PLOTDIR}/write_xput_ops_${runid}.${PLOTEXT}
+# python ../tools/plot.py $files                          \
+#     -xc "window size" -xl "outstanding requests"        \
+#     -yc "write_ops" -yl "million ops/sec"  --ymul 1e-6  \
+#     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
+# display ${plotfile} &
 
-plotfile=${PLOTDIR}/write_cpu_pt_${runid}.${PLOTEXT}
-python ../tools/plot.py $files                          \
-    -xc "window size" -xl "outstanding requests"        \
-    -yc "write_pp" -yl "CQ Poll Time %"                 \
-    -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
-display ${plotfile} &
+# plotfile=${PLOTDIR}/write_cpu_pt_${runid}.${PLOTEXT}
+# python ../tools/plot.py $files                          \
+#     -xc "window size" -xl "outstanding requests"        \
+#     -yc "write_pp" -yl "CQ Poll Time %"                 \
+#     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
+# display ${plotfile} &
 
 # # now getting xput for various data transfer modes alsong with cpu usage.
-for concur in 16 64; do       for msgsize in 64 128 256 512 720 1024 1440; do
-        echo "Running xput with $msgsize B msg size for window sizes $concur"; 
-        datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
-        if [[ $REGEN ]]; then
-            bash run.sh -o="-y -c ${concur} -m ${msgsize} -o ${datafile}"
-        elif [ ! -f $datafile ]; then
-            echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
-            exit 1
-        fi
+# runs: 01-11-03-06, 01-12-18-34
+# # export MLX5_SHUT_UP_BF=1        # disabling blueflame (run: 01-12-18-34)
+# for concur in 16 64; do       for msgsize in 64 128 256 512 720 1024 1440; do
+#     echo "Running xput with $msgsize B msg size for window sizes $concur"; 
+#     datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
+#     if [[ $REGEN ]]; then
+#         bash run.sh -o="-y -c ${concur} -m ${msgsize} -o ${datafile}"
+#     elif [ ! -f $datafile ]; then
+#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#         exit 1
+#     fi
 
-        plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-        python ../tools/plot.py -d ${datafile} \
-            -xc "sg pieces" -xl "num sg pieces"   \
-            -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
-            -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
-            -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
-            -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
-            --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-            -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-        display ${plotfile} &
+#     plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
+#     python ../tools/plot.py -d ${datafile} \
+#         -xc "sg pieces" -xl "num sg pieces"   \
+#         -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
+#         -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
+#         -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
+#         -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
+#         --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 9 
+#     display ${plotfile} &
 
-        plotfile=${PLOTDIR}/sg_cput_pt_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-        python ../tools/plot.py -d ${datafile} \
-            -xc "sg pieces" -xl "num sg pieces"   \
-            -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
-            -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
-            -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
-            -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
-            -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-            -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-        display ${plotfile} &
-    done
-done
+#     plotfile=${PLOTDIR}/sg_cput_pt_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
+#     python ../tools/plot.py -d ${datafile} \
+#         -xc "sg pieces" -xl "num sg pieces"   \
+#         -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
+#         -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
+#         -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
+#         -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
+#         -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 9 
+#     display ${plotfile} &
+#     done
+# done
 
+
+#================================================================#
+
+# RDMA SG Xput and CPU usage with/without BlueFlame support
+# runs: 01-13-12-08, 01-13-16-17
+
+# for concur in 128; do       for msgsize in 64 256 512 720 1024 1440; do
+#     # run without blueflame
+#     echo "Running xput with $msgsize B msg size for window sizes $concur (BLUEFLAME disabled)";
+#     export MLX5_SHUT_UP_BF=0      
+#     data_nobf=${RUNDIR}/xputv2_${msgsize}B_without_bf
+#     if [[ $REGEN ]]; then
+#         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${data_nobf}"
+#     elif [ ! -f $data_nobf ]; then
+#         echo "ERROR! Datafile $data_nobf not found for this run. Try --regen or another runid."
+#         exit 1
+#     fi
+    
+#     # run with blueflame
+#     echo "Running xput with $msgsize B msg size for window sizes $concur (BLUEFLAME enabled)";
+#     export MLX5_SHUT_UP_BF=1      
+#     data_bf=${RUNDIR}/xputv2_${msgsize}B_with_bf        # NOTE: with_bf means "with bf shut up" i.e., disabled
+#     if [[ $REGEN ]]; then
+#         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${data_bf}"
+#     elif [ ! -f $data_bf ]; then
+#         echo "ERROR! Datafile $data_bf not found for this run. Try --regen or another runid."
+#         exit 1
+#     fi
+
+#     # We are interested in scatter-gather xput and cpu usage
+#     plotfile=${PLOTDIR}/sg_xput_${msgsize}B_bf_${runid}.${PLOTEXT}
+#     python ../tools/plot.py \
+#         -xc "sg pieces" -xl "num sg pieces" \
+#         -dyc ${data_nobf} "base_ops" -l "no gather (baseline)" -ls dashed  \
+#         -dyc ${data_nobf} "nic_gather_ops" -l "MMIO" -ls solid  \
+#         -dyc ${data_bf} "nic_gather_ops" -l "Doorbell" -ls solid  \
+#         --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Reqs in flight: ${concur}" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 11
+#     display ${plotfile} &
+
+#     plotfile=${PLOTDIR}/sg_cpu_${msgsize}B_bf_${runid}.${PLOTEXT}
+#     python ../tools/plot.py \
+#         -xc "sg pieces" -xl "num sg pieces" \
+#         -dyc ${data_nobf} "base_pp" -l "no gather (baseline)" -ls dashed  \
+#         -dyc ${data_nobf} "nic_gather_pp" -l "MMIO" -ls solid  \
+#         -dyc ${data_bf} "nic_gather_pp" -l "Doorbell" -ls solid  \
+#         -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Reqs in flight: ${concur}" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 11
+#     display ${plotfile} &
+# done
+# done
+
+# # put all sizes in one plot to compare
+# # for msgsize in 64 256 512 1024; do
+# for msgsize in 1440; do
+#     xputplots="${xputplots} -dyc ${RUNDIR}/xputv2_${msgsize}B_with_bf nic_gather_ops -l ${msgsize}B(doorbell)  -ls solid"
+#     xputplots="${xputplots} -dyc ${RUNDIR}/xputv2_${msgsize}B_without_bf nic_gather_ops -l ${msgsize}B(mmio)   -ls dashed"
+#     cpuplots="${cpuplots} -dyc ${RUNDIR}/xputv2_${msgsize}B_with_bf nic_gather_pp -l ${msgsize}B(doorbell)  -ls solid"
+#     cpuplots="${cpuplots} -dyc ${RUNDIR}/xputv2_${msgsize}B_without_bf nic_gather_pp -l ${msgsize}B(mmio)   -ls dashed"
+# done
+
+# plotfile=${PLOTDIR}/sg_xput_across_sizes_${runid}.${PLOTEXT}    # xput
+# python ../tools/plot.py ${xputplots}    \
+#     -xc "sg pieces" -xl "num sg pieces" --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Payload size" \
+#     -o ${plotfile} -of ${PLOTEXT}  -fs 10
+# display ${plotfile} &
+# plotfile=${PLOTDIR}/sg_cpu_across_sizes_${runid}.${PLOTEXT}     # cpu
+# python ../tools/plot.py ${cpuplots}    \
+#     -xc "sg pieces" -xl "num sg pieces" -yl "CQ Poll Time %" --ltitle "Payload size" \
+#     -o ${plotfile} -of ${PLOTEXT}  -fs 10
+# display ${plotfile} &
+
+#================================================================#

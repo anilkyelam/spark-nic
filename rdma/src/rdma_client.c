@@ -1521,6 +1521,8 @@ int main(int argc, char **argv) {
 
         /* Get advanced xput numbers for various data transfer modes */
         if (xputv2_flag) {
+            printf("Blue flame disabled?: %s\n", getenv("MLX5_SHUT_UP_BF"));
+
             FILE *fptr;
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
