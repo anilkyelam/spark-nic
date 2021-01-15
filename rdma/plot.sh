@@ -6,7 +6,7 @@
 for i in "$@"
 do
 case $i in
-    -r|--regen)                 # re-run experiments to generate data
+    -g|--gen)                 # re-run experiments to generate data
     REGEN=1
     ;;
 
@@ -372,3 +372,25 @@ mkdir -p ${PLOTDIR}
 # display ${plotfile} &
 
 #================================================================#
+
+# # RTT numbers with/without blueflame to see difference in latencies
+data_nobf=${RUNDIR}/rtts_nobf
+data_bf=${RUNDIR}/rtts_bf
+plotfile=${PLOTDIR}/rtt_bf_${runid}.${PLOTEXT}
+if [[ $REGEN ]]; then
+    export MLX5_SHUT_UP_BF=1  
+    bash run.sh -o="--rtt -o ${data_nobf}"
+    export MLX5_SHUT_UP_BF=0
+    bash run.sh -o="--rtt -o ${data_bf}"
+elif [ ! -f $data_bf ] || [ ! -f $data_nobf ]; then
+    echo "ERROR! Datafiles $data_nobf or $data_bf not found for this run. Try --regen or another runid."
+    exit 1
+fi
+python ../tools/plot.py \
+    -xc "msg size" -xl "msg size (B)" -yl "RTT (micro-sec)" \
+    -dyc ${data_nobf} "write" -l "write (doorbell)" -ls solid \
+    -dyc ${data_bf} "write" -l "write (mmio)"  -ls dashed \
+    -dyc ${data_nobf} "read" -l "read (doorbell)" -ls solid \
+    -dyc ${data_bf} "read" -l "read (mmio)"  -ls dashed \
+    -o ${plotfile} -of ${PLOTEXT} --ltitle "Operation" -fs 11
+display ${plotfile} &
