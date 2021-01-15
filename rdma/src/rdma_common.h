@@ -71,6 +71,9 @@
 /* Default port where the RDMA server is listening */
 #define DEFAULT_RDMA_PORT (20886)
 
+/* Self-imposed limit of total queue pairs */
+#define MAX_QPS 10
+
 /* 
  * We use attribute so that compiler does not step in and try to pad the structure.
  * We use this structure to exchange information between the server and the client. 
