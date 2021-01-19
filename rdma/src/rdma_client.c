@@ -520,7 +520,8 @@ static result_t measure_xput(
     int num_concur,                     // number of requests in flight; use 1 for RTT measurements
     enum rdma_measured_op rdma_op,      // rdma op to use i.e., read or write
     enum mem_reg_mode mr_mode,          // mem reg mode; see comments for each "enum mem_reg_mode" 
-    int num_lbuffers                    // number of pre-registed buffers to rotate between; only valid for MR_MODE_PRE_REGISTER_WITH_ROTATE
+    int num_lbuffers,                   // number of pre-registed buffers to rotate between; only valid for MR_MODE_PRE_REGISTER_WITH_ROTATE
+    int num_qps                         // num of QPs to use
 ) {
     int ret = -1, n, i;
     struct ibv_wc* wc;
@@ -532,6 +533,8 @@ static result_t measure_xput(
     struct ibv_mr **mr_buffers = NULL;           /* Make sure to deregister these local MRs before exiting */
     struct ibv_mr *tmpbuffer = NULL;
     result_t result;
+    union work_req_id wr_id;
+    int qp_num = 0;
     
     /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
      * is very less; while there is no such limit for WRITES. The connection parameters initiator_depth
@@ -619,16 +622,18 @@ static result_t measure_xput(
 
     /* Post until number of max requests in flight is hit */
     char *buf_ptr = mr_buffers[0]->addr;
-    int	buf_offset = 0;
+    int	buf_offset = 0, slot_num = 0;
     int buf_num = 0;
     uint64_t wr_posted = 0, wr_acked = 0;
     for (i = 0; i < num_concur; i++) {
         /* it is safe to reuse client_send_wr object after post_() returns */
-        client_send_sge.lkey = mr_buffers[buf_num]->lkey;   /* Sets which MR to use to access the local address */
-        client_send_wr.wr_id = buf_offset;                  /* User-assigned id to recognize this WR on completion */
+        client_send_sge.lkey = mr_buffers[buf_num]->lkey;   /* Sets which MR to use to access the local address */   
+        wr_id.s.qp_num = qp_num;
+        wr_id.s.window_slot = slot_num;
+        client_send_wr.wr_id = wr_id.val;                  /* User-assigned id to recognize this WR on completion */
         client_send_sge.addr = (uint64_t) buf_ptr;          /* Sets which mem addr to read from/write to locally */  // FIXME
         client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + buf_offset; 
-        ret = ibv_post_send(client_qp[0], 
+        ret = ibv_post_send(client_qp[qp_num], 
                 &client_send_wr,
                 &bad_client_send_wr);
         if (ret) {
@@ -638,10 +643,12 @@ static result_t measure_xput(
         }
         	
         wr_posted++;
-        buf_offset  = (buf_offset + msg_size) % buf_size;
+        slot_num    = (slot_num + 1) % num_concur;
+        buf_offset  = slot_num * msg_size;
 	    buf_ptr     = mr_buffers[0]->addr + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
         buf_num     = (buf_num++) % num_lbuffers;
         // buf_num     = rand_xorshf96() % num_lbuffers;
+        qp_num      = (qp_num + 1) % num_qps;
 
         if (mr_mode == MR_MODE_REGISTER_IN_DATAPTH) {
             /* Emulate a buffer registration op for each request in datapath so we can capture its latency in the RTT.
@@ -719,13 +726,17 @@ static result_t measure_xput(
 
             if (!stop_posting) {
                 /* Issue another request that reads/writes from same locations as the completed one */
-                buf_offset  = wc[i].wr_id;
+                wr_id.val =  wc[i].wr_id;
+                qp_num = wr_id.s.qp_num;
+                slot_num = wr_id.s.window_slot;
+
+                buf_offset = slot_num * msg_size;
                 buf_ptr     = mr_buffers[0]->addr + buf_offset;
                 client_send_sge.lkey = mr_buffers[buf_num]->lkey; 
-                client_send_wr.wr_id = buf_offset;              /* User-assigned id to recognize this WR on completion */
+                client_send_wr.wr_id = wr_id.val;              /* User-assigned id to recognize this WR on completion */
                 client_send_sge.addr = (uint64_t) buf_ptr;
                 client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + buf_offset;
-                ret = ibv_post_send(client_qp[0], 
+                ret = ibv_post_send(client_qp[qp_num], 
                         &client_send_wr,
                         &bad_client_send_wr);
                 if (ret) {
@@ -857,7 +868,8 @@ static result_t measure_xput_scatgath(
     uint32_t num_sg_pieces,            // number of scatter-gather pieces
     int num_concur,                     // number of requests in flight; use 1 for RTT measurements
     enum rdma_measured_op rdma_op,      // rdma op to use i.e., read or write
-    enum data_transfer_mode dtr_mode    // data transfer mode
+    enum data_transfer_mode dtr_mode,    // data transfer mode
+    int num_qps                         // number of QPs to use
 ) {
     int ret = -1, n, i, j;
     struct ibv_wc* wc;
@@ -868,6 +880,8 @@ static result_t measure_xput_scatgath(
     void *context = NULL;
     int num_mr_bufs;
     result_t result;
+    int qp_num = 0;
+    union work_req_id wr_id;
     
     struct ibv_mr **mr_buffers = NULL;           /* Make sure to deregister these local MRs before exiting */
     struct ibv_mr *one_big_buffer = NULL;       /* Make sure to deregister these local MRs before exiting */
@@ -909,7 +923,8 @@ static result_t measure_xput_scatgath(
             num_concur,
             rdma_op,
             MR_MODE_PRE_REGISTER_WITH_ROTATE,
-            num_sg_pieces);
+            num_sg_pieces,
+            num_qps);
         result.xput_ops /= num_sg_pieces;
         return result;
     }
@@ -965,7 +980,9 @@ static result_t measure_xput_scatgath(
         big_buf_sge[i].length = (uint32_t) msg_size;           // Send only msg_size
         big_buf_sge[i].lkey = one_big_buffer->lkey;   
         
-        big_buf_wrs[i].wr_id = i;                               /* User-assigned id to recognize this WR on completion */
+        wr_id.s.qp_num = 0;
+        wr_id.s.window_slot = i;
+        big_buf_wrs[i].wr_id = wr_id.val;                               /* User-assigned id to recognize this WR on completion */
         big_buf_wrs[i].sg_list = &big_buf_sge[i];
         big_buf_wrs[i].num_sge = 1;
         big_buf_wrs[i].opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
@@ -992,7 +1009,9 @@ static result_t measure_xput_scatgath(
             src_sge_arr[i][j].lkey = mr_buffers[j]->lkey;
         }
 
-        src_buf_wrs[i].wr_id = i;                               /* User-assigned id to recognize this WR on completion */
+        wr_id.s.qp_num = 0;
+        wr_id.s.window_slot = i;
+        big_buf_wrs[i].wr_id = wr_id.val;                               /* User-assigned id to recognize this WR on completion */
         src_buf_wrs[i].sg_list = &src_sge_arr[i][0];
         src_buf_wrs[i].num_sge = num_mr_bufs;
         src_buf_wrs[i].opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
@@ -1013,6 +1032,7 @@ static result_t measure_xput_scatgath(
 
     /* Post until number of max requests in flight is hit */
     uint64_t wr_posted = 0, wr_acked = 0;
+    qp_num = 0;
     for (i = 0; i < num_concur; i++) {
 
         /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
@@ -1030,8 +1050,13 @@ static result_t measure_xput_scatgath(
         // *((char*)one_big_buffer->addr + big_buf_size - 1) = '\0';
         // printf("%s\n", (char*)one_big_buffer->addr); 
 
+        /* find the wr to send and save current qp number in wr_id */
         struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_NIC_GATHER ? &src_buf_wrs[i] : &big_buf_wrs[i];
-        ret = ibv_post_send(client_qp[0], 
+        wr_id.val = wr_to_send->wr_id;
+        wr_id.s.qp_num = qp_num;
+        wr_to_send->wr_id = wr_id.val;
+
+        ret = ibv_post_send(client_qp[qp_num], 
                 wr_to_send,
                 &bad_client_send_wr);
         if (ret) {
@@ -1041,6 +1066,7 @@ static result_t measure_xput_scatgath(
         }
         	
         wr_posted++;
+        qp_num = (qp_num + 1) % num_qps;        // round-robin across available qps
     }
 
     /* at this point we are expecting work completions for the requests */
@@ -1104,8 +1130,10 @@ static result_t measure_xput_scatgath(
             }
 
             if (!stop_posting) {
-                /* Issue another request that reads/writes from same locations as the completed one */
-                int idx = wc[i].wr_id;
+                /* Issue another request that reads/writes from same locations and on the same QP as the completed one */
+                wr_id.val = wc[i].wr_id;
+                int idx = wr_id.s.window_slot;
+                qp_num = wr_id.s.qp_num;
                 
                 /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
                 if (dtr_mode == DTR_MODE_CPU_GATHER) {
@@ -1117,7 +1145,7 @@ static result_t measure_xput_scatgath(
                 }
 
                 struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_NIC_GATHER ? &src_buf_wrs[idx] : &big_buf_wrs[idx];
-                ret = ibv_post_send(client_qp[0], 
+                ret = ibv_post_send(client_qp[qp_num], 
                     wr_to_send,
                     &bad_client_send_wr);
                 if (ret) {
@@ -1530,8 +1558,8 @@ int main(int argc, char **argv) {
             printf("=========== RTTs =============\n");
             printf("msg size,write,read\n");
             for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += msg_size_incr) {
-                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf).xput_ops;
-                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf).xput_ops;
+                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps).xput_ops;
+                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps).xput_ops;
                 printf("%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
                 if (write_to_file) {
                     fprintf(fptr, "%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
@@ -1559,8 +1587,9 @@ int main(int argc, char **argv) {
             for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
                 for (num_mbuf = min_num_mbuf; num_mbuf <= max_num_mbuf; num_mbuf += 500)    // FIXME
                     for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) {
-                        result_t wput = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf);
-                        double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf).xput_ops : 0;
+                        result_t wput = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps);
+                        double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? 
+                            measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps).xput_ops : 0;
                         double rput_gbps = rput_ops * msg_size * 8 / 1e9;
                         printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
                             msg_size, num_concur, num_mbuf, wput.xput_ops, wput.xput_bps, 
@@ -1603,10 +1632,10 @@ int main(int argc, char **argv) {
                     for (num_pieces = 1; num_pieces < MAX_SGE; num_pieces++) {
                         if (msg_size % num_pieces != 0)     // Only consider factors
                             continue;
-                        result_t mode1 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER);
-                        result_t mode2 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER);
-                        result_t mode3 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER);
-                        result_t mode4 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_PIECE_BY_PIECE);
+                        result_t mode1 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER, num_qps);
+                        result_t mode2 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER, num_qps);
+                        result_t mode3 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER, num_qps);
+                        result_t mode4 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_PIECE_BY_PIECE, num_qps);
                         printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
                             msg_size, num_concur, num_pieces, 
                             mode1.xput_ops, mode1.xput_bps, mode1.cq_poll_time_percent, mode1.cq_poll_count, mode1.cq_empty_count, 

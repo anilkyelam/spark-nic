@@ -74,6 +74,16 @@
 /* Self-imposed limit of total queue pairs */
 #define MAX_QPS 10
 
+/* Bit field for work request id (NOT Portable) */
+union work_req_id {
+    struct {
+		unsigned qp_num 		: 6;		// max: 64
+		unsigned window_slot 	: 10;		// max: 1024
+		unsigned unused 		: 32;		
+    } s;
+    uint64_t val;
+};
+
 /* 
  * We use attribute so that compiler does not step in and try to pad the structure.
  * We use this structure to exchange information between the server and the client. 

@@ -11,7 +11,7 @@ case $i in
     ;;
 
     -d=*|--runid=*)             # provide run id if plotting data from previous runs; 
-    RUNID_GIVEN="${i#*=}"       # ignored if --regen is set
+    RUNID_GIVEN="${i#*=}"       # ignored if --gen is set
     ;;
 
     -c=*|--readme=*)            # optional comments for this run; 
@@ -36,7 +36,7 @@ if [[ $REGEN ]]; then
     mkdir -p $DATADIR/$runid
 else         
     if [[ -z "$RUNID_GIVEN" ]]; then
-        echo "ERROR! Provide runid under data/ for plotting, or use --regen to generate data"
+        echo "ERROR! Provide runid under data/ for plotting, or use --gen to generate data"
         exit 1
     fi           
     runid=$RUNID_GIVEN; 
@@ -373,24 +373,86 @@ mkdir -p ${PLOTDIR}
 
 #================================================================#
 
-# # RTT numbers with/without blueflame to see difference in latencies
-data_nobf=${RUNDIR}/rtts_nobf
-data_bf=${RUNDIR}/rtts_bf
-plotfile=${PLOTDIR}/rtt_bf_${runid}.${PLOTEXT}
-if [[ $REGEN ]]; then
-    export MLX5_SHUT_UP_BF=1  
-    bash run.sh -o="--rtt -o ${data_nobf}"
-    export MLX5_SHUT_UP_BF=0
-    bash run.sh -o="--rtt -o ${data_bf}"
-elif [ ! -f $data_bf ] || [ ! -f $data_nobf ]; then
-    echo "ERROR! Datafiles $data_nobf or $data_bf not found for this run. Try --regen or another runid."
-    exit 1
-fi
-python ../tools/plot.py \
-    -xc "msg size" -xl "msg size (B)" -yl "RTT (micro-sec)" \
-    -dyc ${data_nobf} "write" -l "write (doorbell)" -ls solid \
-    -dyc ${data_bf} "write" -l "write (mmio)"  -ls dashed \
-    -dyc ${data_nobf} "read" -l "read (doorbell)" -ls solid \
-    -dyc ${data_bf} "read" -l "read (mmio)"  -ls dashed \
-    -o ${plotfile} -of ${PLOTEXT} --ltitle "Operation" -fs 11
-display ${plotfile} &
+# # # RTT numbers with/without blueflame to see difference in latencies
+# data_nobf=${RUNDIR}/rtts_nobf
+# data_bf=${RUNDIR}/rtts_bf
+# plotfile=${PLOTDIR}/rtt_bf_${runid}.${PLOTEXT}
+# if [[ $REGEN ]]; then
+#     export MLX5_SHUT_UP_BF=1  
+#     bash run.sh -o="--rtt -o ${data_nobf}"
+#     export MLX5_SHUT_UP_BF=0
+#     bash run.sh -o="--rtt -o ${data_bf}"
+# elif [ ! -f $data_bf ] || [ ! -f $data_nobf ]; then
+#     echo "ERROR! Datafiles $data_nobf or $data_bf not found for this run. Try --regen or another runid."
+#     exit 1
+# fi
+# python ../tools/plot.py \
+#     -xc "msg size" -xl "msg size (B)" -yl "RTT (micro-sec)" \
+#     -dyc ${data_nobf} "write" -l "write (doorbell)" -ls solid \
+#     -dyc ${data_bf} "write" -l "write (mmio)"  -ls dashed \
+#     -dyc ${data_nobf} "read" -l "read (doorbell)" -ls solid \
+#     -dyc ${data_bf} "read" -l "read (mmio)"  -ls dashed \
+#     -o ${plotfile} -of ${PLOTEXT} --ltitle "Operation" -fs 11
+# display ${plotfile} &
+
+#================================================================#
+
+
+# # RDMA SG Xput and CPU usage with varying number of queue pairs
+# # runs: 01-15-15-20
+
+export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
+for concur in 128; do   for msgsize in 64 256 512 720 1024 1440; do
+    xputplotsq=
+    cpuplotsq=
+    for qps in 1 2 4 8; do
+        datafile=${RUNDIR}/sg_xput_qps_${qps}_${msgsize}B_${concur}w
+        if [[ $REGEN ]]; then
+            bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -q ${qps} -o ${datafile}" -so="-q ${qps}"
+        elif [ ! -f $datafile ]; then
+            echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+            exit 1
+        fi
+
+        # Plots per QP
+        plotfile=${PLOTDIR}/sg_xput_${qps}qps_${msgsize}B_${concur}R.${PLOTEXT}
+        python ../tools/plot.py -d ${datafile} \
+            -xc "sg pieces" -xl "num sg pieces"   \
+            -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
+            -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
+            -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
+            -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
+            --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, QPs: ${qps}" \
+            -o ${plotfile} -of ${PLOTEXT}  -fs 10
+        display ${plotfile} &
+
+        plotfile=${PLOTDIR}/sg_cpu_${qps}qps_${msgsize}B_${concur}R.${PLOTEXT}
+        python ../tools/plot.py -d ${datafile} \
+            -xc "sg pieces" -xl "num sg pieces"   \
+            -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
+            -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
+            -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
+            -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
+            -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, QPs: ${qps}" \
+            -o ${plotfile} -of ${PLOTEXT}  -fs 10
+        display ${plotfile} &
+
+        xputplotsq="${xputplotsq} -dyc ${datafile} nic_gather_ops -l sg(qps:${qps})  -ls solid"
+        xputplotsq="${xputplotsq} -dyc ${datafile} base_ops -l base(qps:${qps})  -ls dashed"
+        cpuplotsq="${cpuplotsq} -dyc ${datafile} nic_gather_pp -l sg(qps:${qps})  -ls solid"
+        cpuplotsq="${cpuplotsq} -dyc ${datafile} base_pp -l base(qps:${qps})  -ls dashed"
+    done
+
+    # Plots across QPs
+    plotfile=${PLOTDIR}/sg_xput_across_qps_${msgsize}B_${concur}R.${PLOTEXT}    # xput
+    python ../tools/plot.py ${xputplotsq}    \
+        -xc "sg pieces" -xl "num sg pieces" --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize} B" \
+        -o ${plotfile} -of ${PLOTEXT}  -fs 10
+    display ${plotfile} &
+    plotfile=${PLOTDIR}/sg_cpu_across_qps_${msgsize}B_${concur}R.${PLOTEXT}     # cpu
+    python ../tools/plot.py ${cpuplotsq}    \
+        -xc "sg pieces" -xl "num sg pieces" -yl "CQ Poll Time %" --ltitle "Size: ${msgsize} B" \
+        -o ${plotfile} -of ${PLOTEXT}  -fs 10
+    display ${plotfile} &
+done; done
+

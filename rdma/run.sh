@@ -27,6 +27,10 @@ case $i in
     -o=*|--opts=*)          # options for rdma_client program
     OPTS="${i#*=}"
     ;;
+     
+    -so=*|--srvopts=*)      # options for rdma_server program
+    SRV_OPTS="${i#*=}"
+    ;;
     
     *)                      # unknown option
     ;;
@@ -56,7 +60,7 @@ fi
 echo "Starting server"
 SERVER_PORT=20886
 ssh "$SERVER_HOST" "pkill rdma_server"
-ssh "$SERVER_HOST" "nohup ${DIR}/bin/rdma_server -p $SERVER_PORT &> /dev/null &"
+ssh "$SERVER_HOST" "nohup ${DIR}/bin/rdma_server -p $SERVER_PORT ${SRV_OPTS} &> /dev/null &"
 if [[ $? -ne 0 ]]; then 
     echo "ERROR! Setting up RDMA server failed!";
 fi
