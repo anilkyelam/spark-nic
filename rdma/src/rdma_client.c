@@ -995,7 +995,6 @@ static result_t measure_xput_scatgath(
         big_buf_offset  = (big_buf_offset + msg_size) % big_buf_size;
     }
 
-
     /* Pre-Prepare SGE lists and WRs for gathering data from scattered buffers for different concurent requests */
     struct ibv_send_wr src_buf_wrs[num_concur];
     bzero(&src_buf_wrs, sizeof(src_buf_wrs));
@@ -1025,22 +1024,35 @@ static result_t measure_xput_scatgath(
         big_buf_offset  = (big_buf_offset + msg_size) % big_buf_size;
     }
 
+    /* Allocate a really really big dummy buffer for CPU to copy the data from, 
+     * to emulate data spread over large space; this is necessary to emulate similar level of 
+     * cache misses which we acheive by randomly accessing this buffer 
+     * TIP: I checked the cache-miss ratio using the `perf` tool */
+    const size_t DUMMY_BUF_SIZE = 1024*1024*1024;  // 1 GB
+    void* dummy_buffer = NULL;
+    if (dtr_mode == DTR_MODE_CPU_GATHER) {
+        dummy_buffer = malloc(DUMMY_BUF_SIZE + msg_size);   
+        memset(dummy_buffer, 1, DUMMY_BUF_SIZE);     // this is necessary to actually allocate memory
+    }
+
     /* Start timer */
     gettimeofday (&start, NULL);
     rdtsc();
     start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
 
     /* Post until number of max requests in flight is hit */
-    uint64_t wr_posted = 0, wr_acked = 0;
+    uint64_t wr_posted = 0, wr_acked = 0, buf_access_pt;
     qp_num = 0;
     for (i = 0; i < num_concur; i++) {
 
         /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
+        buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
         if (dtr_mode == DTR_MODE_CPU_GATHER) {
             for (j = 0; j < num_mr_bufs; j++) {
                 memcpy(
                     (void*)(big_buf_sge[i].addr + j*sg_piece_size),     // to: big buffer at position of j-th piece
-                    (void*)src_sge_arr[i][j].addr,                      // from: scattered data piece number j
+                    // (void*)src_sge_arr[i][j].addr,                   // from: scattered data piece number j
+                    dummy_buffer + buf_access_pt,                       // from: a random point in dummy buffer to encourage a cache miss
                     src_sge_arr[i][j].length
                 );
             }
@@ -1136,10 +1148,12 @@ static result_t measure_xput_scatgath(
                 qp_num = wr_id.s.qp_num;
                 
                 /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
+                buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
                 if (dtr_mode == DTR_MODE_CPU_GATHER) {
                     memcpy(
-                        (void*)(big_buf_sge[idx].addr + j*sg_piece_size),     // to: big buffer at position of j-th piece
-                        (void*)src_sge_arr[idx][j].addr,                      // from: scattered data piece number j
+                        (void*)(big_buf_sge[idx].addr + j*sg_piece_size),       // to: big buffer at position of j-th piece
+                        // (void*)src_sge_arr[idx][j].addr,                     // from: scattered data piece number j
+                        dummy_buffer + buf_access_pt,                           // from: a random point in dummy buffer to encourage a cache miss
                         src_sge_arr[idx][j].length
                     );
                 }
@@ -1171,7 +1185,7 @@ static result_t measure_xput_scatgath(
 
     /* SANITY CHECK */
     /* In case of RDMA writes, perform a sanity check by reading the server-side buffer and checking its content */
-    if (rdma_op == RDMA_WRITE_OP && dtr_mode != DTR_MODE_NO_GATHER) {
+    if (rdma_op == RDMA_WRITE_OP && dtr_mode != DTR_MODE_NO_GATHER && dtr_mode != DTR_MODE_CPU_GATHER) {
         /* Clear the local buffer and issue a big read */
         memset(one_big_buffer->addr, 0, num_concur * msg_size); 
 
@@ -1225,6 +1239,7 @@ static result_t measure_xput_scatgath(
     for (i = 0; i < num_mr_bufs; i++)
         rdma_buffer_deregister(mr_buffers[i]);	
     rdma_buffer_deregister(one_big_buffer);
+    if (dummy_buffer != NULL)   free(dummy_buffer);
 
     /* Calculate duration. See if RDTSC timer agrees with regular ctime.
      * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
@@ -1352,6 +1367,7 @@ int main(int argc, char **argv) {
     int write_to_file = 0;
     char outfile[200] ;
     int num_qps = 1;
+    int num_pieces = 0;
 
     /* Parse Command Line Arguments */
     static const struct option options[] = {
@@ -1362,11 +1378,12 @@ int main(int argc, char **argv) {
         {.name = "concur", .has_arg = required_argument, .val = 'c'},
         {.name = "buffers", .has_arg = required_argument, .val = 'b'},
         {.name = "msgsize", .has_arg = required_argument, .val = 'm'},
+        {.name = "pieces", .has_arg = required_argument, .val = 'z'},
         {.name = "out", .has_arg = required_argument, .val = 'o'},
         {.name = "qps", .has_arg = required_argument, .val = 'q'},
         {}
     };
-    while ((option = getopt_long(argc, argv, "sa:p:rxyc:b:m:o:q:", options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "sa:p:rxyc:b:m:o:q:z:", options, NULL)) != -1) {
         switch (option) {
             case 's':
                 /* run the basic example to test connection */
@@ -1433,6 +1450,15 @@ int main(int argc, char **argv) {
                 msg_size = strtol(optarg, NULL, 0); 
                 if (msg_size < 0 || msg_size > 4096) {
                     rdma_error("Invalid msg_size. Should be between 1 and %d\n", 4096);
+                    return -1;
+                }
+                break;
+            case 'z':
+                /* number of scatter-gather pieces to use */
+                /* num_pieces < 0: invalid; = 0: vary from 1 to 16; > 0: use the number. Default is 0 (vary) */
+                num_pieces = strtol(optarg, NULL, 0); 
+                if (num_pieces < 0 || num_pieces > 4096) {
+                    rdma_error("Invalid num_pieces. Should be between 1 and %d\n", 4096);
                     return -1;
                 }
                 break;
@@ -1538,6 +1564,9 @@ int main(int argc, char **argv) {
         // int max_num_mbuf = num_mbuf == 0 ? MAX_MR : num_mbuf;
         int max_num_mbuf = num_mbuf == 0 ? 1e6 : num_mbuf;
 
+        int min_num_pieces = num_pieces == 0 ? 1 : num_pieces;
+        int max_num_pieces = num_pieces == 0 ? 16 : num_pieces;
+
         /* Get roundtrip latencies for ops */
         if (rtt_flag) {
             // printf("RTT for %d B WRITES: %0.2lf mu-secs\n", 64, measure_rtt(64, RDMA_WRITE_OP));        // WRITE RTT
@@ -1629,7 +1658,7 @@ int main(int argc, char **argv) {
             int num_pieces;
             for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
                 for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) 
-                    for (num_pieces = 1; num_pieces < MAX_SGE; num_pieces++) {
+                    for (num_pieces = min_num_pieces; num_pieces <= max_num_pieces; num_pieces++) {
                         if (msg_size % num_pieces != 0)     // Only consider factors
                             continue;
                         result_t mode1 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER, num_qps);

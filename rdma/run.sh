@@ -68,4 +68,5 @@ sleep 1
 
 # Run client on the client host 
 echo "Running client with options: $OPTS"
+# sudo perf stat -e task-clock,cycles,instructions,cache-references,cache-misses 
 taskset 0x4 ${DIR}/bin/rdma_client -a ${SERVER_IP} -p ${SERVER_PORT} ${OPTS}

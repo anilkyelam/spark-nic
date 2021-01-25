@@ -397,62 +397,108 @@ mkdir -p ${PLOTDIR}
 
 #================================================================#
 
-
 # # RDMA SG Xput and CPU usage with varying number of queue pairs
 # # runs: 01-15-15-20
 
+# export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
+# for concur in 128; do   for msgsize in 64 256 512 720 1024 1440; do
+#     xputplotsq=
+#     cpuplotsq=
+#     for qps in 1 2 4 8; do
+#         datafile=${RUNDIR}/sg_xput_qps_${qps}_${msgsize}B_${concur}w
+#         if [[ $REGEN ]]; then
+#             bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -q ${qps} -o ${datafile}" -so="-q ${qps}"
+#         elif [ ! -f $datafile ]; then
+#             echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#             exit 1
+#         fi
+
+#         # Plots per QP
+#         plotfile=${PLOTDIR}/sg_xput_${qps}qps_${msgsize}B_${concur}R.${PLOTEXT}
+#         python ../tools/plot.py -d ${datafile} \
+#             -xc "sg pieces" -xl "num sg pieces"   \
+#             -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
+#             -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
+#             -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
+#             -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
+#             --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, QPs: ${qps}" \
+#             -o ${plotfile} -of ${PLOTEXT}  -fs 10
+#         display ${plotfile} &
+
+#         plotfile=${PLOTDIR}/sg_cpu_${qps}qps_${msgsize}B_${concur}R.${PLOTEXT}
+#         python ../tools/plot.py -d ${datafile} \
+#             -xc "sg pieces" -xl "num sg pieces"   \
+#             -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
+#             -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
+#             -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
+#             -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
+#             -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, QPs: ${qps}" \
+#             -o ${plotfile} -of ${PLOTEXT}  -fs 10
+#         display ${plotfile} &
+
+#         xputplotsq="${xputplotsq} -dyc ${datafile} nic_gather_ops -l sg(qps:${qps})  -ls solid"
+#         xputplotsq="${xputplotsq} -dyc ${datafile} base_ops -l base(qps:${qps})  -ls dashed"
+#         cpuplotsq="${cpuplotsq} -dyc ${datafile} nic_gather_pp -l sg(qps:${qps})  -ls solid"
+#         cpuplotsq="${cpuplotsq} -dyc ${datafile} base_pp -l base(qps:${qps})  -ls dashed"
+#     done
+
+#     # Plots across QPs
+#     plotfile=${PLOTDIR}/sg_xput_across_qps_${msgsize}B_${concur}R.${PLOTEXT}    # xput
+#     python ../tools/plot.py ${xputplotsq}    \
+#         -xc "sg pieces" -xl "num sg pieces" --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize} B" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 10
+#     display ${plotfile} &
+#     plotfile=${PLOTDIR}/sg_cpu_across_qps_${msgsize}B_${concur}R.${PLOTEXT}     # cpu
+#     python ../tools/plot.py ${cpuplotsq}    \
+#         -xc "sg pieces" -xl "num sg pieces" -yl "CQ Poll Time %" --ltitle "Size: ${msgsize} B" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 10
+#     display ${plotfile} &
+# done; done
+
+
+#================================================================#
+
+# # Copy overhead for different message sizes (finer granularity)
+# # 
+
+vary=0
 export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
-for concur in 128; do   for msgsize in 64 256 512 720 1024 1440; do
-    xputplotsq=
-    cpuplotsq=
-    for qps in 1 2 4 8; do
-        datafile=${RUNDIR}/sg_xput_qps_${qps}_${msgsize}B_${concur}w
-        if [[ $REGEN ]]; then
-            bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -q ${qps} -o ${datafile}" -so="-q ${qps}"
-        elif [ ! -f $datafile ]; then
-            echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
-            exit 1
-        fi
+for concur in 128; do
+    datafile=${RUNDIR}/copy_xput_by_msgsize_${concur}w
+    if [[ $REGEN ]]; then
+        bash run.sh -o="--xputv2 -c ${concur} -m ${vary} --pieces 1 -o ${datafile}"
+    elif [ ! -f $datafile ]; then
+        echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+        exit 1
+    fi
 
-        # Plots per QP
-        plotfile=${PLOTDIR}/sg_xput_${qps}qps_${msgsize}B_${concur}R.${PLOTEXT}
-        python ../tools/plot.py -d ${datafile} \
-            -xc "sg pieces" -xl "num sg pieces"   \
-            -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
-            -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
-            -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
-            -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
-            --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, QPs: ${qps}" \
-            -o ${plotfile} -of ${PLOTEXT}  -fs 10
-        display ${plotfile} &
-
-        plotfile=${PLOTDIR}/sg_cpu_${qps}qps_${msgsize}B_${concur}R.${PLOTEXT}
-        python ../tools/plot.py -d ${datafile} \
-            -xc "sg pieces" -xl "num sg pieces"   \
-            -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
-            -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
-            -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
-            -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
-            -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, QPs: ${qps}" \
-            -o ${plotfile} -of ${PLOTEXT}  -fs 10
-        display ${plotfile} &
-
-        xputplotsq="${xputplotsq} -dyc ${datafile} nic_gather_ops -l sg(qps:${qps})  -ls solid"
-        xputplotsq="${xputplotsq} -dyc ${datafile} base_ops -l base(qps:${qps})  -ls dashed"
-        cpuplotsq="${cpuplotsq} -dyc ${datafile} nic_gather_pp -l sg(qps:${qps})  -ls solid"
-        cpuplotsq="${cpuplotsq} -dyc ${datafile} base_pp -l base(qps:${qps})  -ls dashed"
-    done
-
-    # Plots across QPs
-    plotfile=${PLOTDIR}/sg_xput_across_qps_${msgsize}B_${concur}R.${PLOTEXT}    # xput
-    python ../tools/plot.py ${xputplotsq}    \
-        -xc "sg pieces" -xl "num sg pieces" --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize} B" \
-        -o ${plotfile} -of ${PLOTEXT}  -fs 10
+    # Plots per QP
+    plotfile=${PLOTDIR}/copy_xput_by_msgsize_${concur}w.${PLOTEXT}
+    python ../tools/plot.py -d ${datafile} \
+        -xc "msg size" -xl "message size (bytes)" \
+        -yc "base_ops" -l "zero copy" -ls dashed  \
+        -yc "cpu_gather_ops" -l "bounce buffer" -ls solid  \
+        --ymul 1e-6 -yl "Xput (Million ops)"\
+        -o ${plotfile} -of ${PLOTEXT} -fs 10
     display ${plotfile} &
-    plotfile=${PLOTDIR}/sg_cpu_across_qps_${msgsize}B_${concur}R.${PLOTEXT}     # cpu
-    python ../tools/plot.py ${cpuplotsq}    \
-        -xc "sg pieces" -xl "num sg pieces" -yl "CQ Poll Time %" --ltitle "Size: ${msgsize} B" \
-        -o ${plotfile} -of ${PLOTEXT}  -fs 10
-    display ${plotfile} &
-done; done
 
+    plotfile=${PLOTDIR}/copy_xput_bps_by_msgsize_${concur}w.${PLOTEXT}
+    python ../tools/plot.py -d ${datafile} \
+        -xc "msg size" -xl "message size (bytes)"   \
+        -yc "base_gbps" -l "zero copy" -ls dashed  \
+        -yc "cpu_gather_gpbs" -l "bounce buffer" -ls solid  \
+        -yl "Xput (Gbps)" \
+        -o ${plotfile} -of ${PLOTEXT} -fs 11
+    display ${plotfile} &
+
+    plotfile=${PLOTDIR}/copy_cpu_by_msgsize_${concur}w.${PLOTEXT}
+    python ../tools/plot.py -d ${datafile} \
+        -xc "msg size" -xl "message size (bytes)"   \
+        -yc "base_pp" -l "zero copy" -ls dashed  \
+        -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
+        -yl "CQ Poll Time %" \
+        -o ${plotfile} -of ${PLOTEXT} -fs 11
+    display ${plotfile} &
+done
+
+#================================================================#
