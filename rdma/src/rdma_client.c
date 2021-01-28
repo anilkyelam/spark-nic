@@ -8,6 +8,8 @@
 #include <sys/time.h>
 #include <assert.h>
 
+#define MOPS_TO_RTT(x) (1e6 / x)
+
 /* These are basic RDMA resources */
 /* These are RDMA connection related resources */
 static struct ibv_context **devices;
@@ -1046,9 +1048,9 @@ static result_t measure_xput_scatgath(
     for (i = 0; i < num_concur; i++) {
 
         /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
-        buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
         if (dtr_mode == DTR_MODE_CPU_GATHER) {
             for (j = 0; j < num_mr_bufs; j++) {
+                buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
                 memcpy(
                     (void*)(big_buf_sge[i].addr + j*sg_piece_size),     // to: big buffer at position of j-th piece
                     // (void*)src_sge_arr[i][j].addr,                   // from: scattered data piece number j
@@ -1148,14 +1150,16 @@ static result_t measure_xput_scatgath(
                 qp_num = wr_id.s.qp_num;
                 
                 /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
-                buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
                 if (dtr_mode == DTR_MODE_CPU_GATHER) {
-                    memcpy(
-                        (void*)(big_buf_sge[idx].addr + j*sg_piece_size),       // to: big buffer at position of j-th piece
-                        // (void*)src_sge_arr[idx][j].addr,                     // from: scattered data piece number j
-                        dummy_buffer + buf_access_pt,                           // from: a random point in dummy buffer to encourage a cache miss
-                        src_sge_arr[idx][j].length
-                    );
+                    for (j = 0; j < num_mr_bufs; j++) {
+                        buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
+                        memcpy(
+                            (void*)(big_buf_sge[idx].addr + j*sg_piece_size),       // to: big buffer at position of j-th piece
+                            // (void*)src_sge_arr[idx][j].addr,                     // from: scattered data piece number j
+                            dummy_buffer + buf_access_pt,                           // from: a random point in dummy buffer to encourage a cache miss
+                            src_sge_arr[idx][j].length
+                        );
+                    }
                 }
 
                 struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_NIC_GATHER ? &src_buf_wrs[idx] : &big_buf_wrs[idx];
@@ -1360,7 +1364,7 @@ int main(int argc, char **argv) {
     char* dummy_text = "HELLO";
     src = dst = NULL; 
     int simple = 0, i;
-    int rtt_flag = 0, xput_flag = 0, xputv2_flag = 0;
+    int rtt_flag = 0, rttv2_flag = 0, xput_flag = 0, xputv2_flag = 0;
     int num_concur = 1;
     int num_mbuf = 1;
     int msg_size = 0;
@@ -1373,6 +1377,7 @@ int main(int argc, char **argv) {
     static const struct option options[] = {
         {.name = "simple", .has_arg = no_argument, .val = 's'},
         {.name = "rtt", .has_arg = no_argument, .val = 'r'},
+        {.name = "rttv2", .has_arg = no_argument, .val = 'w'},
         {.name = "xput", .has_arg = no_argument, .val = 'x'},
         {.name = "xputv2", .has_arg = no_argument, .val = 'y'},
         {.name = "concur", .has_arg = required_argument, .val = 'c'},
@@ -1417,6 +1422,10 @@ int main(int argc, char **argv) {
             case 'r':
                 /* Run RTT measurement (for all msg sizes) */
                 rtt_flag = 1;     
+                break;
+            case 'w':
+                /* Run advanced xput measurements for different data transfer modes  */
+                rttv2_flag = 1;     
                 break;
             case 'x':
                 /* Run xput measurement */
@@ -1553,8 +1562,8 @@ int main(int argc, char **argv) {
             }
         }
         
-        int min_num_concur = num_concur == 0 ? 1 : num_concur;
-        int max_num_concur = num_concur == 0 ? 256 : num_concur;        /* Empirically found that anything above this number does not matter for single core */
+        int min_num_concur = num_concur == 0 ? 2 : num_concur;
+        int max_num_concur = num_concur == 0 ? 150 : num_concur;        /* Empirically found that anything above this number does not matter for single core */
 
         int min_msg_size = msg_size == 0 ? 64 : msg_size;
         int max_msg_size = msg_size == 0 ? 4096 : msg_size;
@@ -1635,6 +1644,36 @@ int main(int argc, char **argv) {
             if (write_to_file)  fclose(fptr);
         }
 
+        /* Get advanced roundtrip latencies for various data transfer modes */
+        if (rttv2_flag) {
+            /* Generate RTT numbers for different msg sizes */
+            FILE *fptr;
+            if (write_to_file) {
+                printf("Writing output to: %s\n", outfile);\
+                fptr = fopen(outfile, "w");
+                fprintf(fptr, "msg size,sg pieces,base_rtt,cpu_gather_rtt,nic_gather_rtt,piece_by_piece_rtt\n");
+            }
+            printf("=========== RTTs =============\n");
+            num_concur = 1;
+            for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) 
+                for (num_pieces = min_num_pieces; num_pieces <= max_num_pieces; num_pieces++) {
+                    if (msg_size % num_pieces != 0)     // Only consider factors
+                        continue;
+                    result_t mode1 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER, num_qps);
+                    result_t mode2 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER, num_qps);
+                    result_t mode3 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER, num_qps);
+                    result_t mode4 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_PIECE_BY_PIECE, num_qps);
+                    printf("%d,%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_pieces,
+                         MOPS_TO_RTT(mode1.xput_ops), MOPS_TO_RTT(mode2.xput_ops), MOPS_TO_RTT(mode3.xput_ops), MOPS_TO_RTT(mode4.xput_ops));
+                    if (write_to_file) {
+                        fprintf(fptr, "%d,%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_pieces,  
+                            MOPS_TO_RTT(mode1.xput_ops), MOPS_TO_RTT(mode2.xput_ops), MOPS_TO_RTT(mode3.xput_ops), MOPS_TO_RTT(mode4.xput_ops));
+                        fflush(fptr);
+                    }
+                }
+            if (write_to_file)  fclose(fptr);
+        }
+
         /* Get advanced xput numbers for various data transfer modes */
         if (xputv2_flag) {
             printf("Blue flame disabled?: %s\n", getenv("MLX5_SHUT_UP_BF"));
@@ -1655,8 +1694,7 @@ int main(int argc, char **argv) {
                 "cpu_gather_ops,cpu_gather_gpbs,cpu_gather_pp,cpu_gather_pcq,cpu_gather_ecq,"
                 "nic_gather_ops,nic_gather_gbps,nic_gather_pp,nic_gather_pcq,nic_gather_ecq,"
                 "piece_by_piece_ops,piece_by_piece_gbps,piece_by_piece_pp,piece_by_piece_pcq,piece_by_piece_ecq\n");
-            int num_pieces;
-            for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
+            for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur += 8)
                 for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) 
                     for (num_pieces = min_num_pieces; num_pieces <= max_num_pieces; num_pieces++) {
                         if (msg_size % num_pieces != 0)     // Only consider factors

@@ -7,7 +7,7 @@ for i in "$@"
 do
 case $i in
     -g|--gen)                 # re-run experiments to generate data
-    REGEN=1
+    gen=1
     ;;
 
     -d=*|--runid=*)             # provide run id if plotting data from previous runs; 
@@ -31,7 +31,7 @@ DATADIR=${DIR}/data
 mkdir -p ${DATADIR}
 
 # Figure out data location
-if [[ $REGEN ]]; then   
+if [[ $gen ]]; then   
     runid=$(date '+%m-%d-%H-%M');    # unique id
     mkdir -p $DATADIR/$runid
 else         
@@ -67,10 +67,10 @@ mkdir -p ${PLOTDIR}
 # # # RDMA read/write RTT plot
 # datafile=${RUNDIR}/rtts
 # plotfile=${PLOTDIR}/rtt_${runid}.${PLOTEXT}
-# if [[ $REGEN ]]; then
+# if [[ $gen ]]; then
 #   bash run.sh -o="-r -o ${datafile}"
 # elif [ ! -f $datafile ]; then
-#     echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
 #     exit 1
 # fi
 # python ../tools/plot.py -d ${datafile} \
@@ -89,10 +89,10 @@ mkdir -p ${PLOTDIR}
 # do 
 #     echo "Running xput with $concur concurrent requests"; 
 #     datafile=${RUNDIR}/xput_window_${concur}
-#     if [[ $REGEN ]]; then
+#     if [[ $gen ]]; then
 #         bash run.sh -o="-x -c ${concur} -m ${vary} -o ${datafile}"
 #     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
 #         exit 1
 #     fi
 #     files="$files -d ${datafile} -l $concur"
@@ -137,10 +137,10 @@ mkdir -p ${PLOTDIR}
 # do 
 #     echo "Running xput with $msgsize B msg size for various window sizes"; 
 #     datafile=${RUNDIR}/xput_msgsize_${msgsize}
-#     if [[ $REGEN ]]; then
+#     if [[ $gen ]]; then
 #         bash run.sh -o="-x -c ${vary} -m ${msgsize} -o ${datafile}"
 #     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
 #         exit 1
 #     fi
 #     files="$files -d ${datafile} -l ${msgsize}B"
@@ -183,11 +183,11 @@ mkdir -p ${PLOTDIR}
 # # (relevant runs: 01-03-22-38 )
 # datafile=${RUNDIR}/rtts_mr
 # plotfile=${PLOTDIR}/rtt_mr_${runid}.${PLOTEXT}
-# if [[ $REGEN ]]; then
+# if [[ $gen ]]; then
 #     # TODO: Need to set mr_mode to MR_MODE_REGISTER_IN_DATAPTH in the client
 #     bash run.sh -o="-r -o ${datafile}"     
 # elif [ ! -f $datafile ]; then
-#     echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
 #     exit 1
 # fi
 # python ../tools/plot.py -d ${datafile} \
@@ -206,10 +206,10 @@ mkdir -p ${PLOTDIR}
 # for concur in 128; do           for msgsize in 1440; do                                 # (run: 01-09-17-22) 
 #         echo "Running xput with $msgsize B msg size for window sizes $concur"; 
 #         datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
-#         if [[ $REGEN ]]; then
+#         if [[ $gen ]]; then
 #             bash run.sh -o="-y -c ${concur} -m ${msgsize} -o ${datafile}"
 #         elif [ ! -f $datafile ]; then
-#             echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#             echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
 #             exit 1
 #         fi
 
@@ -239,10 +239,10 @@ mkdir -p ${PLOTDIR}
 # do 
 #     echo "Running xput with $msgsize B msg size for various window sizes"; 
 #     datafile=${RUNDIR}/xput_pt_msgsize_${msgsize}
-#     if [[ $REGEN ]]; then
+#     if [[ $gen ]]; then
 #         bash run.sh -o="--xput -c ${vary} -m ${msgsize} -o ${datafile}"
 #     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
 #         exit 1
 #     fi
 #     files="$files -d ${datafile} -l ${msgsize}B"
@@ -262,16 +262,16 @@ mkdir -p ${PLOTDIR}
 #     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
 # display ${plotfile} &
 
-# # now getting xput for various data transfer modes alsong with cpu usage.
-# runs: 01-11-03-06, 01-12-18-34
-# # export MLX5_SHUT_UP_BF=1        # disabling blueflame (run: 01-12-18-34)
-# for concur in 16 64; do       for msgsize in 64 128 256 512 720 1024 1440; do
+# # # now getting xput for various data transfer modes alsong with cpu usage.
+# # runs: 01-11-03-06, 01-12-18-34 (bf enabled), 01-28-14-41 (fixed a cpu copy bug), 
+# export MLX5_SHUT_UP_BF=1        # disabling blueflame (runs >= 01-12-18-34)
+# for concur in 128; do       for msgsize in 64 512 1024; do
 #     echo "Running xput with $msgsize B msg size for window sizes $concur"; 
 #     datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
-#     if [[ $REGEN ]]; then
-#         bash run.sh -o="-y -c ${concur} -m ${msgsize} -o ${datafile}"
+#     if [[ $gen ]]; then
+#         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${datafile}"
 #     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
 #         exit 1
 #     fi
 
@@ -299,7 +299,6 @@ mkdir -p ${PLOTDIR}
 #     done
 # done
 
-
 #================================================================#
 
 # RDMA SG Xput and CPU usage with/without BlueFlame support
@@ -310,10 +309,10 @@ mkdir -p ${PLOTDIR}
 #     echo "Running xput with $msgsize B msg size for window sizes $concur (BLUEFLAME disabled)";
 #     export MLX5_SHUT_UP_BF=0      
 #     data_nobf=${RUNDIR}/xputv2_${msgsize}B_without_bf
-#     if [[ $REGEN ]]; then
+#     if [[ $gen ]]; then
 #         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${data_nobf}"
 #     elif [ ! -f $data_nobf ]; then
-#         echo "ERROR! Datafile $data_nobf not found for this run. Try --regen or another runid."
+#         echo "ERROR! Datafile $data_nobf not found for this run. Try --gen or another runid."
 #         exit 1
 #     fi
     
@@ -321,10 +320,10 @@ mkdir -p ${PLOTDIR}
 #     echo "Running xput with $msgsize B msg size for window sizes $concur (BLUEFLAME enabled)";
 #     export MLX5_SHUT_UP_BF=1      
 #     data_bf=${RUNDIR}/xputv2_${msgsize}B_with_bf        # NOTE: with_bf means "with bf shut up" i.e., disabled
-#     if [[ $REGEN ]]; then
+#     if [[ $gen ]]; then
 #         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${data_bf}"
 #     elif [ ! -f $data_bf ]; then
-#         echo "ERROR! Datafile $data_bf not found for this run. Try --regen or another runid."
+#         echo "ERROR! Datafile $data_bf not found for this run. Try --gen or another runid."
 #         exit 1
 #     fi
 
@@ -377,13 +376,13 @@ mkdir -p ${PLOTDIR}
 # data_nobf=${RUNDIR}/rtts_nobf
 # data_bf=${RUNDIR}/rtts_bf
 # plotfile=${PLOTDIR}/rtt_bf_${runid}.${PLOTEXT}
-# if [[ $REGEN ]]; then
+# if [[ $gen ]]; then
 #     export MLX5_SHUT_UP_BF=1  
 #     bash run.sh -o="--rtt -o ${data_nobf}"
 #     export MLX5_SHUT_UP_BF=0
 #     bash run.sh -o="--rtt -o ${data_bf}"
 # elif [ ! -f $data_bf ] || [ ! -f $data_nobf ]; then
-#     echo "ERROR! Datafiles $data_nobf or $data_bf not found for this run. Try --regen or another runid."
+#     echo "ERROR! Datafiles $data_nobf or $data_bf not found for this run. Try --gen or another runid."
 #     exit 1
 # fi
 # python ../tools/plot.py \
@@ -406,10 +405,10 @@ mkdir -p ${PLOTDIR}
 #     cpuplotsq=
 #     for qps in 1 2 4 8; do
 #         datafile=${RUNDIR}/sg_xput_qps_${qps}_${msgsize}B_${concur}w
-#         if [[ $REGEN ]]; then
+#         if [[ $gen ]]; then
 #             bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -q ${qps} -o ${datafile}" -so="-q ${qps}"
 #         elif [ ! -f $datafile ]; then
-#             echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+#             echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
 #             exit 1
 #         fi
 
@@ -458,47 +457,123 @@ mkdir -p ${PLOTDIR}
 
 #================================================================#
 
-# # Copy overhead for different message sizes (finer granularity)
-# # 
+# # # Copy overhead for different message sizes (finer granularity)
+# # # 
 
-vary=0
-export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
-for concur in 128; do
-    datafile=${RUNDIR}/copy_xput_by_msgsize_${concur}w
-    if [[ $REGEN ]]; then
-        bash run.sh -o="--xputv2 -c ${concur} -m ${vary} --pieces 1 -o ${datafile}"
-    elif [ ! -f $datafile ]; then
-        echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
-        exit 1
-    fi
+# vary=0
+# export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
+# for concur in 128; do
+#     datafile=${RUNDIR}/copy_xput_by_msgsize_${concur}w
+#     if [[ $gen ]]; then
+#         bash run.sh -o="--xputv2 -c ${concur} -m ${vary} --pieces 1 -o ${datafile}"
+#     elif [ ! -f $datafile ]; then
+#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+#         exit 1
+#     fi
 
-    # Plots per QP
-    plotfile=${PLOTDIR}/copy_xput_by_msgsize_${concur}w.${PLOTEXT}
-    python ../tools/plot.py -d ${datafile} \
-        -xc "msg size" -xl "message size (bytes)" \
-        -yc "base_ops" -l "zero copy" -ls dashed  \
-        -yc "cpu_gather_ops" -l "bounce buffer" -ls solid  \
-        --ymul 1e-6 -yl "Xput (Million ops)"\
-        -o ${plotfile} -of ${PLOTEXT} -fs 10
-    display ${plotfile} &
+#     # Plots per QP
+#     plotfile=${PLOTDIR}/copy_xput_by_msgsize_${concur}w.${PLOTEXT}
+#     python ../tools/plot.py -d ${datafile} \
+#         -xc "msg size" -xl "message size (bytes)" \
+#         -yc "base_ops" -l "zero copy" -ls dashed  \
+#         -yc "cpu_gather_ops" -l "bounce buffer" -ls solid  \
+#         --ymul 1e-6 -yl "Xput (Million ops)"\
+#         -o ${plotfile} -of ${PLOTEXT} -fs 10
+#     display ${plotfile} &
 
-    plotfile=${PLOTDIR}/copy_xput_bps_by_msgsize_${concur}w.${PLOTEXT}
-    python ../tools/plot.py -d ${datafile} \
-        -xc "msg size" -xl "message size (bytes)"   \
-        -yc "base_gbps" -l "zero copy" -ls dashed  \
-        -yc "cpu_gather_gpbs" -l "bounce buffer" -ls solid  \
-        -yl "Xput (Gbps)" \
-        -o ${plotfile} -of ${PLOTEXT} -fs 11
-    display ${plotfile} &
+#     plotfile=${PLOTDIR}/copy_xput_bps_by_msgsize_${concur}w.${PLOTEXT}
+#     python ../tools/plot.py -d ${datafile} \
+#         -xc "msg size" -xl "message size (bytes)"   \
+#         -yc "base_gbps" -l "zero copy" -ls dashed  \
+#         -yc "cpu_gather_gpbs" -l "bounce buffer" -ls solid  \
+#         -yl "Xput (Gbps)" \
+#         -o ${plotfile} -of ${PLOTEXT} -fs 11
+#     display ${plotfile} &
 
-    plotfile=${PLOTDIR}/copy_cpu_by_msgsize_${concur}w.${PLOTEXT}
-    python ../tools/plot.py -d ${datafile} \
-        -xc "msg size" -xl "message size (bytes)"   \
-        -yc "base_pp" -l "zero copy" -ls dashed  \
-        -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
-        -yl "CQ Poll Time %" \
-        -o ${plotfile} -of ${PLOTEXT} -fs 11
-    display ${plotfile} &
-done
+#     plotfile=${PLOTDIR}/copy_cpu_by_msgsize_${concur}w.${PLOTEXT}
+#     python ../tools/plot.py -d ${datafile} \
+#         -xc "msg size" -xl "message size (bytes)"   \
+#         -yc "base_pp" -l "zero copy" -ls dashed  \
+#         -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
+#         -yl "CQ Poll Time %" \
+#         -o ${plotfile} -of ${PLOTEXT} -fs 11
+#     display ${plotfile} &
+# done
 
 #================================================================#
+
+# # # RTT numbers for copy overhead (expecting to see cycles spent on copying data)
+# # # 
+# vary=0
+# export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
+# datafile=${RUNDIR}/copy_rtt_by_msgsize
+# if [[ $gen ]]; then
+#     bash run.sh -o="--rttv2 -m ${vary} --pieces 1 -o ${datafile}"
+# elif [ ! -f $datafile ]; then
+#     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+#     exit 1
+# fi
+
+# # Plots per QP
+# plotfile=${PLOTDIR}/copy_rtt_by_msgsize.${PLOTEXT}
+# python ../tools/plot.py -d ${datafile} \
+#     -xc "msg size" -xl "message size (bytes)" \
+#     -yc "base_rtt" -l "zero copy" -ls dashed  \
+#     -yc "cpu_gather_rtt" -l "bounce buffer" -ls solid  \
+#     -yl "RTT (micro-sec)"\
+#     -o ${plotfile} -of ${PLOTEXT} -fs 10
+# display ${plotfile} &
+
+#================================================================#
+
+# # # RTT numbers for various data transfer modes (I never looked at RTTs before)
+# # # 
+# vary=0
+# for msgsize in 64 128 512 1024 1440; do
+#     datafile=${RUNDIR}/sg_rtts_${msgsize}B
+#     plotfile=${PLOTDIR}/sg_rtts_${msgsize}B.${PLOTEXT}
+#     if [[ $gen ]]; then
+#         export MLX5_SHUT_UP_BF=1  
+#         bash run.sh -o="--rttv2 -m ${msgsize} -o ${datafile}"
+#     elif [ ! -f $datafile ]; then
+#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+#         exit 1
+#     fi
+#     python ../tools/plot.py -d ${datafile} \
+#         -xc "sg pieces" -xl "num sg pieces"   \
+#         -yc "base_rtt" -l "no gather (baseline)" -ls dashed  \
+#         -yc "cpu_gather_rtt" -l "CPU gather" -ls solid  \
+#         -yc "nic_gather_rtt" -l "NIC gather" -ls solid  \
+#         -yl "RTT (micro-sec)" --ltitle "Operation" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 10
+#     display ${plotfile} &
+# done
+
+#================================================================#
+
+# # # Vary window size for various number of pieces, to get max concurrency 
+# # # that is supported under current limitations
+# # # Runs: 01-27-14-22, 
+
+# vary=0
+# for msgsize in 512; do
+#     plots=
+#     for pieces in 8 16; do          # only these are not CPU limited
+#         datafile=${RUNDIR}/sg_xput_by_concur_${msgsize}B_${pieces}pieces
+#         if [[ $gen ]]; then
+#             export MLX5_SHUT_UP_BF=1  
+#             bash run.sh -o="--xputv2 -m ${msgsize} --pieces ${pieces} -c ${vary} -o ${datafile}"
+#         elif [ ! -f $datafile ]; then
+#             echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+#             exit 1
+#         fi
+#         plots="${plots} -d ${datafile} -l ${pieces}"
+#     done
+#     plotfile=${PLOTDIR}/sg_xput_by_concur_${msgsize}B
+#     python ../tools/plot.py ${plots}  \
+#         -xc "window size" -xl "Window size"   \
+#         -yc "nic_gather_ops" -yl "Xput (Mpps)" --ltitle "SG pieces" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 11
+#     display ${plotfile} &
+# done
+
