@@ -1150,9 +1150,9 @@ static result_t measure_xput_scatgath(
                 qp_num = wr_id.s.qp_num;
                 
                 /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
-                if (dtr_mode == DTR_MODE_CPU_GATHER) {
-                    for (j = 0; j < num_mr_bufs; j++) {
-                        buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
+                for (j = 0; j < num_mr_bufs; j++) {
+                    buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
+                    if (dtr_mode == DTR_MODE_CPU_GATHER) {
                         memcpy(
                             (void*)(big_buf_sge[idx].addr + j*sg_piece_size),       // to: big buffer at position of j-th piece
                             // (void*)src_sge_arr[idx][j].addr,                     // from: scattered data piece number j

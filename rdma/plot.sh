@@ -262,42 +262,43 @@ mkdir -p ${PLOTDIR}
 #     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
 # display ${plotfile} &
 
-# # # now getting xput for various data transfer modes alsong with cpu usage.
-# # runs: 01-11-03-06, 01-12-18-34 (bf enabled), 01-28-14-41 (fixed a cpu copy bug), 
-# export MLX5_SHUT_UP_BF=1        # disabling blueflame (runs >= 01-12-18-34)
+# # now getting xput for various data transfer modes alsong with cpu usage.
+# runs: 01-11-03-06, 01-12-18-34 (bf enabled), 01-28-14-41 (fixed a cpu copy bug), 
+export MLX5_SHUT_UP_BF=1        # disabling blueflame (runs >= 01-12-18-34)
 # for concur in 128; do       for msgsize in 64 512 1024; do
-#     echo "Running xput with $msgsize B msg size for window sizes $concur"; 
-#     datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
-#     if [[ $gen ]]; then
-#         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${datafile}"
-#     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#         exit 1
-#     fi
+for concur in 128; do       for msgsize in 4 8 16 32 64; do
+    echo "Running xput with $msgsize B msg size for window sizes $concur"; 
+    datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
+    if [[ $gen ]]; then
+        bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${datafile}"
+    elif [ ! -f $datafile ]; then
+        echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+        exit 1
+    fi
 
-#     plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-#     python ../tools/plot.py -d ${datafile} \
-#         -xc "sg pieces" -xl "num sg pieces"   \
-#         -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
-#         -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
-#         -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
-#         -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
-#         --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-#     display ${plotfile} &
+    plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
+    python ../tools/plot.py -d ${datafile} \
+        -xc "sg pieces" -xl "num sg pieces"   \
+        -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
+        -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
+        -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
+        -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
+        --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
+        -o ${plotfile} -of ${PLOTEXT}  -fs 9 
+    display ${plotfile} &
 
-#     plotfile=${PLOTDIR}/sg_cput_pt_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-#     python ../tools/plot.py -d ${datafile} \
-#         -xc "sg pieces" -xl "num sg pieces"   \
-#         -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
-#         -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
-#         -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
-#         -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
-#         -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-#     display ${plotfile} &
-#     done
-# done
+    plotfile=${PLOTDIR}/sg_cput_pt_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
+    python ../tools/plot.py -d ${datafile} \
+        -xc "sg pieces" -xl "num sg pieces"   \
+        -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
+        -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
+        -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
+        -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
+        -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
+        -o ${plotfile} -of ${PLOTEXT}  -fs 9 
+    display ${plotfile} &
+    done
+done
 
 #================================================================#
 
@@ -527,9 +528,10 @@ mkdir -p ${PLOTDIR}
 #================================================================#
 
 # # # RTT numbers for various data transfer modes (I never looked at RTTs before)
-# # # 
+# # # runs: 01-28-15-49
 # vary=0
-# for msgsize in 64 128 512 1024 1440; do
+# # for msgsize in 64 128 512 1024 1440; do       # run 01-28-15-49
+# for msgsize in 4 8 16 32 64; do                 # run 01-28-17-55
 #     datafile=${RUNDIR}/sg_rtts_${msgsize}B
 #     plotfile=${PLOTDIR}/sg_rtts_${msgsize}B.${PLOTEXT}
 #     if [[ $gen ]]; then

@@ -1,0 +1,5 @@
+msg size,sg pieces,base_rtt,cpu_gather_rtt,nic_gather_rtt,piece_by_piece_rtt
+8,1,2.56,2.74,2.56,2.56
+8,2,2.54,2.76,2.60,5.13
+8,4,2.58,2.81,2.81,10.27
+8,8,2.57,2.94,2.82,20.53

@@ -1,0 +1,4 @@
+msg size,window size,sg pieces,base_ops,base_gbps,base_pp,base_pcq,base_ecq,cpu_gather_ops,cpu_gather_gpbs,cpu_gather_pp,cpu_gather_pcq,cpu_gather_ecq,nic_gather_ops,nic_gather_gbps,nic_gather_pp,nic_gather_pcq,nic_gather_ecq,piece_by_piece_ops,piece_by_piece_gbps,piece_by_piece_pp,piece_by_piece_pcq,piece_by_piece_ecq
+4,128,1,6942313.42,0.22,16.06,0.01,0.00,5319982.56,0.17,12.37,0.01,0.00,6927795.45,0.22,16.07,0.01,0.00,7088345.02,0.23,16.37,0.01,0.00
+4,128,2,6942747.82,0.22,16.13,0.01,0.00,4561039.03,0.15,10.65,0.01,0.00,6887138.80,0.22,16.02,0.01,0.00,3539784.64,0.11,16.46,0.01,0.00
+4,128,4,6942934.53,0.22,16.01,0.01,0.00,3570222.53,0.11,8.35,0.01,0.00,6518040.85,0.21,15.20,0.01,0.00,1769967.20,0.06,16.47,0.01,0.00
