@@ -13,3 +13,6 @@
 [submodule "rdma/learn/RDMA-Tutorial-orig"]
 	path = rdma/learn/RDMA-Tutorial-orig
 	url = https://github.com/jcxue/RDMA-Tutorial/
+[submodule "spark_/HiBench"]
+	path = spark_/HiBench
+	url = https://github.com/anilkyelam/HiBench

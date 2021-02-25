@@ -264,41 +264,68 @@ mkdir -p ${PLOTDIR}
 
 # # now getting xput for various data transfer modes alsong with cpu usage.
 # runs: 01-11-03-06, 01-12-18-34 (bf enabled), 01-28-14-41 (fixed a cpu copy bug), 
-export MLX5_SHUT_UP_BF=1        # disabling blueflame (runs >= 01-12-18-34)
-# for concur in 128; do       for msgsize in 64 512 1024; do
-for concur in 128; do       for msgsize in 4 8 16 32 64; do
-    echo "Running xput with $msgsize B msg size for window sizes $concur"; 
-    datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
-    if [[ $gen ]]; then
-        bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${datafile}"
-    elif [ ! -f $datafile ]; then
-        echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-        exit 1
-    fi
+# export MLX5_SHUT_UP_BF=1        # disabling blueflame (runs >= 01-12-18-34)
+# # for concur in 128; do       for msgsize in 64 512 1024; do
+# for concur in 128; do       for msgsize in 32 64 128 256 512 1024; do     # 02-08-13-17 
+#     echo "Running xput with $msgsize B msg size for window sizes $concur"; 
+#     datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
+#     if [[ $gen ]]; then
+#         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${datafile}"
+#     elif [ ! -f $datafile ]; then
+#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+#         exit 1
+#     fi
 
-    plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-    python ../tools/plot.py -d ${datafile} \
-        -xc "sg pieces" -xl "num sg pieces"   \
-        -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
-        -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
-        -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
-        -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
-        --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-        -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-    display ${plotfile} &
+#     plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
+#     python ../tools/plot.py -d ${datafile} \
+#         -xc "sg pieces" -xl "num sg pieces"   \
+#         -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
+#         -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
+#         -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
+#         -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
+#         --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 9 
+#     display ${plotfile} &
 
-    plotfile=${PLOTDIR}/sg_cput_pt_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-    python ../tools/plot.py -d ${datafile} \
-        -xc "sg pieces" -xl "num sg pieces"   \
-        -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
-        -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
-        -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
-        -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
-        -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-        -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-    display ${plotfile} &
-    done
-done
+#     plotfile=${PLOTDIR}/sg_cput_pt_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
+#     python ../tools/plot.py -d ${datafile} \
+#         -xc "sg pieces" -xl "num sg pieces"   \
+#         -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
+#         -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
+#         -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
+#         -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
+#         -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
+#         -o ${plotfile} -of ${PLOTEXT}  -fs 9 
+#     display ${plotfile} &
+#     done
+# done
+
+msgsize=64
+concur=128
+plotfile=sg_xput_${msgsize}B_${concur}R.${PLOTEXT}
+python ../tools/plot.py \
+    -xc  "sg pieces" -xl "num sg pieces"   \
+    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "base_ops" -l "Zero Copy" -ls dashed  \
+    -dyc data/02-08-13-17/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_ops" -l "CPU Traversal" -ls solid  \
+    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_ops" -l "CPU Copy" -ls solid  \
+    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "nic_gather_ops" -l "NIC gather" -ls solid  \
+    --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B" \
+    -o ${plotfile} -of ${PLOTEXT}  -fs 9 
+display ${plotfile} &
+
+msgsize=64
+plotfile=sg_cpu_${msgsize}B_${concur}R.${PLOTEXT}
+python ../tools/plot.py \
+    -xc  "sg pieces" -xl "num sg pieces"   \
+    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "base_pp" -l "Zero Copy" -ls dashed  \
+    -dyc data/02-08-13-17/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_pp" -l "CPU Traversal" -ls solid  \
+    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_pp" -l "CPU Copy" -ls solid  \
+    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "nic_gather_pp" -l "NIC gather" -ls solid  \
+    -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B" \
+    -o ${plotfile} -of ${PLOTEXT}  -fs 12
+display ${plotfile} &
+
+
 
 #================================================================#
 

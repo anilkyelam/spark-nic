@@ -143,7 +143,7 @@ void rdma_buffer_free(struct ibv_mr *mr);
  */
 struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd, 
 		void *addr, 
-		uint32_t length, 
+		size_t length, 
 		enum ibv_access_flags permission);
 /* Deregisters a previously register memory 
  * @mr: Memory region to deregister 

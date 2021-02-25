@@ -57,18 +57,17 @@ echo "Checking for openflow rules on the switch"
 pwd=$(cat switch.password)      # Tip: Use (chmod) 600 access for this file
 rules=$(sshpass -p "$pwd" ssh sw100 cli -h '"enable" "show openflow flows"')
 num_rules=$(echo "$rules" | grep "in_port" | wc -l)
-if [[ $num_rules -ne 0 ]] && [[ $num_rules -ne 2 ]];
+if [[ $num_rules -ne 0 ]] && [[ $num_rules -ne 5 ]];
 then 
     # expecting zero or two rules from Stew. If not, something has changed on his side.
-    echo "ERROR! expecting only two custom rules but found $num_rules; double-check to be sure.";
+    echo "ERROR! expecting only 5 custom rules but found $num_rules; double-check to be sure.";
     echo "$rules"
     exit 1
-elif [[ $num_rules -eq 2  ]];
+elif [[ $num_rules -eq 5  ]];
 then
-    # two rules as expected; remove.
-    echo "Found 2 openflow rules on the switch; deleting them"
-    sshpass -p "$pwd" ssh sw100 cli -h '"enable" "configure terminal" "openflow del-flows 1"'
-    sshpass -p "$pwd" ssh sw100 cli -h '"enable" "configure terminal" "openflow del-flows 2"'
+    # five rules as expected; remove.
+    echo "Found 5 openflow rules on the switch; deleting them"
+    sshpass -p "$pwd" ssh sw100 cli -h '"enable" "configure terminal" "openflow del-flows"'
 else 
     echo "no custom openflow rules on switch; we're good!"
 fi

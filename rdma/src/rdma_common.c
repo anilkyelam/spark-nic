@@ -59,7 +59,7 @@ struct ibv_mr* rdma_buffer_alloc(struct ibv_pd *pd, uint32_t size,
 }
 
 struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd, 
-		void *addr, uint32_t length, 
+		void *addr, size_t length, 
 		enum ibv_access_flags permission)
 {
 	struct ibv_mr *mr = NULL;
