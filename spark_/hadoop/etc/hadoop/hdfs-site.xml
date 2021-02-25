@@ -24,7 +24,9 @@
 
   <property>
       <name>dfs.namenode.name.dir</name>
-      <value>/home/ayelam/spark-nic/hadoop/data/nameNode</value> 
+      <!-- FIXME: might want to use local folder to be consistent with the datanode -->
+      <!-- <value>/usr/local/home/ayelam/hadoop/data/nameNode</value>  -->
+      <value>/home/ayelam/spark-nic/spark_/hadoop/data/nameNode</value> 
   </property>
 
   <!-- Use a local folder path for data node storage -->
