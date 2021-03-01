@@ -74,6 +74,9 @@
 /* Self-imposed limit of total queue pairs */
 #define MAX_QPS 10
 
+/* Arbitrary limit on ODP buffer size to perform random accesses from the NIC */
+#define MAX_ODP_SIZE (64ULL*1024*1024*1024)		// 64 GB
+
 /* Bit field for work request id (NOT Portable) */
 union work_req_id {
     struct {

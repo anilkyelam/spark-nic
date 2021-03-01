@@ -48,7 +48,7 @@ fi
 
 RUNDIR=$DATADIR/$runid
 if [[ $README ]]; then
-    echo "$README" >> $RUNDIR/readme
+    echo "$README" > $RUNDIR/readme
 fi
 
 # plots location
@@ -300,30 +300,31 @@ mkdir -p ${PLOTDIR}
 #     done
 # done
 
-msgsize=64
-concur=128
-plotfile=sg_xput_${msgsize}B_${concur}R.${PLOTEXT}
-python ../tools/plot.py \
-    -xc  "sg pieces" -xl "num sg pieces"   \
-    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "base_ops" -l "Zero Copy" -ls dashed  \
-    -dyc data/02-08-13-17/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_ops" -l "CPU Traversal" -ls solid  \
-    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_ops" -l "CPU Copy" -ls solid  \
-    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "nic_gather_ops" -l "NIC gather" -ls solid  \
-    --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B" \
-    -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-display ${plotfile} &
+# # Custom plots to observe breakwdown of costs of cpu copy vs traversal
+# msgsize=64
+# concur=128
+# plotfile=sg_xput_${msgsize}B_${concur}R.${PLOTEXT}
+# python ../tools/plot.py \
+#     -xc  "sg pieces" -xl "num sg pieces"   \
+#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "base_ops" -l "Zero Copy" -ls dashed  \
+#     -dyc data/02-08-13-17/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_ops" -l "CPU Traversal" -ls solid  \
+#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_ops" -l "CPU Copy" -ls solid  \
+#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "nic_gather_ops" -l "NIC gather" -ls solid  \
+#     --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B" \
+#     -o ${plotfile} -of ${PLOTEXT}  -fs 9 
+# display ${plotfile} &
 
-msgsize=64
-plotfile=sg_cpu_${msgsize}B_${concur}R.${PLOTEXT}
-python ../tools/plot.py \
-    -xc  "sg pieces" -xl "num sg pieces"   \
-    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "base_pp" -l "Zero Copy" -ls dashed  \
-    -dyc data/02-08-13-17/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_pp" -l "CPU Traversal" -ls solid  \
-    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_pp" -l "CPU Copy" -ls solid  \
-    -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "nic_gather_pp" -l "NIC gather" -ls solid  \
-    -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B" \
-    -o ${plotfile} -of ${PLOTEXT}  -fs 12
-display ${plotfile} &
+# msgsize=64
+# plotfile=sg_cpu_${msgsize}B_${concur}R.${PLOTEXT}
+# python ../tools/plot.py \
+#     -xc  "sg pieces" -xl "num sg pieces"   \
+#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "base_pp" -l "Zero Copy" -ls dashed  \
+#     -dyc data/02-08-13-17/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_pp" -l "CPU Traversal" -ls solid  \
+#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_pp" -l "CPU Copy" -ls solid  \
+#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "nic_gather_pp" -l "NIC gather" -ls solid  \
+#     -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B" \
+#     -o ${plotfile} -of ${PLOTEXT}  -fs 12
+# display ${plotfile} &
 
 
 
@@ -606,3 +607,25 @@ display ${plotfile} &
 #     display ${plotfile} &
 # done
 
+#================================================================#
+
+# # RTT numbers for various data transfer modes (I never looked at RTTs before)
+# # runs: 
+vary=0
+msgsize=64
+datafile=${RUNDIR}/odp_rtts_${msgsize}B
+plotfile=${PLOTDIR}/odp_rtts_${msgsize}B.${PLOTEXT}
+if [[ $gen ]]; then
+    export MLX5_SHUT_UP_BF=1  
+    bash run.sh -o="--rtt -m ${msgsize} --odp ${vary} -o ${datafile}"
+elif [ ! -f $datafile ]; then
+    echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+    exit 1
+fi
+python ../tools/plot.py -d ${datafile} \
+    -xc "odp buf size" -xl "ODP Buffer Size (pages)"   \
+    -yc "write" -l "Remote Write" -ls solid  \
+    -yc "read" -l "Remote Read" -ls dashed  \
+    -yl "RTT (micro-sec)" --ltitle "Operation" \
+    -o ${plotfile} -of ${PLOTEXT}  -fs 10 --xlog --ylog
+display ${plotfile} &

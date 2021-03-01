@@ -8,7 +8,11 @@
 #include <sys/time.h>
 #include <assert.h>
 
-#define MOPS_TO_RTT(x) (1e6 / x)
+#define MOPS_TO_RTT(x)  (1e6 / x)
+#define CACHE_ALIGNMENT 0xFF
+#define PAGE_ALIGNMENT  0xFFF
+#define PAGE_SIZE       (PAGE_ALIGNMENT+1)
+#define UNUSED_VALUE    -1      
 
 /* These are basic RDMA resources */
 /* These are RDMA connection related resources */
@@ -524,7 +528,8 @@ static result_t measure_xput(
     enum rdma_measured_op rdma_op,      // rdma op to use i.e., read or write
     enum mem_reg_mode mr_mode,          // mem reg mode; see comments for each "enum mem_reg_mode" 
     int num_lbuffers,                   // number of pre-registed buffers to rotate between; only valid for MR_MODE_PRE_REGISTER_WITH_ROTATE
-    int num_qps                         // num of QPs to use
+    int num_qps,                        // num of QPs to use
+    long odp_buf_size                   // buffer size to perform random accesses from when demand paging
 ) {
     int ret = -1, n, i;
     struct ibv_wc* wc;
@@ -538,8 +543,6 @@ static result_t measure_xput(
     result_t result;
     union work_req_id wr_id;
     int qp_num = 0;
-    const uint64_t CACHE_ALIGNMENT = 0xFF;              // 128B (cacheline aligned)
-    const uint64_t PAGE_ALIGNMENT = 0xFFF;              // 4 KB (page aligned)
     
     /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
      * is very less; while there is no such limit for WRITES. The connection parameters initiator_depth
@@ -563,39 +566,44 @@ static result_t measure_xput(
     /* Allocate client buffers to read/write from (use the same piece of underlying memory) */
     mr_buffers = (struct ibv_mr**) malloc(num_lbuffers * sizeof(struct ibv_mr*));
     size_t buf_size = num_concur * msg_size;
-    const size_t DUMMY_BUF_SIZE = 1024*1024*1024;   // 1 GB
-    void* dummy_buffer = NULL;
-    
+
+    void *odp_buffer_raw = NULL, *odp_buffer = NULL;
     if (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP) {
-        // For our purposes, allocate a big region in memory and point buffer to it
-        // NOTE that with implicit ODP, allocating a buffer is not necessary and any valid virtual address can be used
+        if (odp_buf_size % PAGE_SIZE != 0) {
+            rdma_error("Invalid buf size for odp, must be a multiple of page size 4KB\n");
+            result.err_code = -EINVAL;
+            return result; 
+        }
+
         /* Allocate a really really big dummy buffer for NIC to copy the data from,  
-         * this is necessary to perform a lot of cache misses which we acheive by randomly accessing this buffer  */
-        dummy_buffer = calloc(1, DUMMY_BUF_SIZE + msg_size);
-        memset(dummy_buffer, 1, DUMMY_BUF_SIZE);                // this is necessary to actually allocate memory 
-        while ((uint64_t)dummy_buffer & CACHE_ALIGNMENT)    dummy_buffer++;
+         * this is necessary to force a lot of cache misses by randomly accessing this buffer  */
+        odp_buffer_raw = calloc(1, odp_buf_size + PAGE_SIZE);           // pad it by a page
+        memset(odp_buffer_raw, 1, odp_buf_size + PAGE_SIZE);                // this is necessary to actually allocate memory 
+        for (odp_buffer = odp_buffer_raw; (uint64_t)odp_buffer & CACHE_ALIGNMENT; odp_buffer++);    // cacheline-aligned start point
         
-        mr_buffers[0] = rdma_buffer_register(pd, 
-            0,              // For implicit ODP; ref: https://man7.org/linux/man-pages/man3/ibv_reg_mr.3.html
-            SIZE_MAX,       // For implicit ODP
-            (IBV_ACCESS_LOCAL_WRITE | 
-                IBV_ACCESS_REMOTE_WRITE | 
-                IBV_ACCESS_REMOTE_READ |
-                IBV_ACCESS_ON_DEMAND));
+        mr_buffers[0] = 
+            rdma_buffer_register(pd, 
+                0,              // For implicit ODP; ref: https://man7.org/linux/man-pages/man3/ibv_reg_mr.3.html
+                SIZE_MAX,       // For implicit ODP
+                (IBV_ACCESS_LOCAL_WRITE | 
+                    IBV_ACCESS_REMOTE_WRITE | 
+                    IBV_ACCESS_REMOTE_READ |
+                    IBV_ACCESS_ON_DEMAND));
     }
     else {
-        mr_buffers[0] = rdma_buffer_alloc(pd,
-            buf_size,
-            (IBV_ACCESS_LOCAL_WRITE | 
-                IBV_ACCESS_REMOTE_WRITE | 
-                IBV_ACCESS_REMOTE_READ));
+        mr_buffers[0] = 
+            rdma_buffer_alloc(pd,
+                buf_size,
+                (IBV_ACCESS_LOCAL_WRITE | 
+                    IBV_ACCESS_REMOTE_WRITE | 
+                    IBV_ACCESS_REMOTE_READ));
     }
     if (!mr_buffers[0]) {
         rdma_error("We failed to create the destination buffer, -ENOMEM\n");
         result.err_code = -ENOMEM;
         return result;
     }
-    printf("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", 0,
+    debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", 0,
         mr_buffers[0]->addr, mr_buffers[0]->length, mr_buffers[0]->handle, mr_buffers[0]->lkey, mr_buffers[0]->rkey);
 
     if (num_lbuffers > 1) {
@@ -631,7 +639,7 @@ static result_t measure_xput(
             memset(mr_buffers[0]->addr + (i*msg_size), 'a' + i%26, msg_size);
 
     /* Prepare a template WR for RDMA ops */
-    client_send_sge.addr = (uint64_t) (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? dummy_buffer : mr_buffers[0]->addr);  
+    client_send_sge.addr = (uint64_t) (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? odp_buffer : mr_buffers[0]->addr);  
     client_send_sge.length = (uint32_t) msg_size;           // Send only msg_size
     client_send_sge.lkey = mr_buffers[0]->lkey;
     /* now we link to the send work request */
@@ -649,9 +657,8 @@ static result_t measure_xput(
     start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
 
     /* Post until number of max requests in flight is hit */
-    char *buf_ptr = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? dummy_buffer : mr_buffers[0]->addr);
-    int	buf_offset = 0, slot_num = 0;
-    printf("%d %p\n", buf_offset, buf_ptr);
+    char *buf_ptr = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? odp_buffer : mr_buffers[0]->addr);
+    int	lbuf_offset = 0, rbuf_offset = 0, slot_num = 0;
     int buf_num = 0;
     uint64_t wr_posted = 0, wr_acked = 0;
     for (i = 0; i < num_concur; i++) {
@@ -661,7 +668,7 @@ static result_t measure_xput(
         wr_id.s.window_slot = slot_num;
         client_send_wr.wr_id = wr_id.val;                  /* User-assigned id to recognize this WR on completion */
         client_send_sge.addr = (uint64_t) buf_ptr;          /* Sets which mem addr to read from/write to locally */  // FIXME
-        client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + buf_offset; 
+        client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + rbuf_offset; 
         ret = ibv_post_send(client_qp[qp_num], 
                 &client_send_wr,
                 &bad_client_send_wr);
@@ -673,9 +680,9 @@ static result_t measure_xput(
         	
         wr_posted++;
         slot_num    = (slot_num + 1) % num_concur;
-        // buf_offset  = slot_num * msg_size;
-        buf_offset  = rand_xorshf96() % DUMMY_BUF_SIZE;
-	    buf_ptr     = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? dummy_buffer : mr_buffers[0]->addr) + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
+        rbuf_offset = slot_num * msg_size;
+        lbuf_offset = mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? (rand_xorshf96() % odp_buf_size) & ~CACHE_ALIGNMENT : rbuf_offset;
+	    buf_ptr     = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? odp_buffer : mr_buffers[0]->addr) + lbuf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
         buf_num     = (buf_num++) % num_lbuffers;
         // buf_num     = rand_xorshf96() % num_lbuffers;
         qp_num      = (qp_num + 1) % num_qps;
@@ -712,7 +719,7 @@ static result_t measure_xput(
     }
 
     const uint64_t minimum_duration_secs = 10;  /* number of seconds to run the experiment for at least */
-    const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
+    const uint64_t check_watch_interval = 1e3;  /* Check time every million requests as checking on every request might be too costly */
     int stop_posting = 0;
     uint64_t poll_time = 0, poll_count = 0, idle_count = 0;
     wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
@@ -755,23 +762,19 @@ static result_t measure_xput(
             }
 
             if (!stop_posting) {
-                sleep(1);
-
                 /* Issue another request that reads/writes from same locations as the completed one */
                 wr_id.val =  wc[i].wr_id;
                 qp_num = wr_id.s.qp_num;
                 slot_num = wr_id.s.window_slot;
 
-                int offset = 1024 * 1024;
-                buf_offset  = slot_num * msg_size;
-                // buf_offset  = (rand_xorshf96() % (DUMMY_BUF_SIZE / offset)) * offset;
-                buf_offset = 2 * 1024 * 1024;
-                buf_ptr     = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? dummy_buffer : mr_buffers[0]->addr) + buf_offset;
-                printf("%d %p\n", buf_offset, buf_ptr);
+                rbuf_offset  = slot_num * msg_size;
+                lbuf_offset  = mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? (rand_xorshf96() % odp_buf_size) & ~CACHE_ALIGNMENT : rbuf_offset;
+                // lbuf_offset  = (rand_xorshf96() % DUMMY_BUF_SIZE);  // & ~CACHE_ALIGNMENT;        // TODO: May need this
+                buf_ptr      = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? odp_buffer : mr_buffers[0]->addr) + lbuf_offset;
                 client_send_sge.lkey = mr_buffers[buf_num]->lkey; 
                 client_send_wr.wr_id = wr_id.val;              /* User-assigned id to recognize this WR on completion */
                 client_send_sge.addr = (uint64_t) buf_ptr;
-                client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + buf_offset;
+                client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + rbuf_offset;
                 ret = ibv_post_send(client_qp[qp_num], 
                         &client_send_wr,
                         &bad_client_send_wr);
@@ -867,7 +870,7 @@ static result_t measure_xput(
     /* Deregister local MRs */
     for (i = 0; i < num_lbuffers; i++) {
         rdma_buffer_deregister(mr_buffers[i]);
-        if (!mr_buffers[i]->addr)   free(mr_buffers[i]->addr);
+        if (!odp_buffer_raw)   free(odp_buffer_raw);
     }	
 
     /* Calculate duration. See if RDTSC timer agrees with regular ctime.
@@ -962,7 +965,8 @@ static result_t measure_xput_scatgath(
             rdma_op,
             MR_MODE_PRE_REGISTER_WITH_ROTATE,
             num_sg_pieces,
-            num_qps);
+            num_qps,
+            UNUSED_VALUE);
         result.xput_ops /= num_sg_pieces;
         return result;
     }
@@ -1410,6 +1414,7 @@ int main(int argc, char **argv) {
     char outfile[200] ;
     int num_qps = 1;
     int num_pieces = 0;
+    long odp_size, odp_enabled = 0;
 
     /* Parse Command Line Arguments */
     static const struct option options[] = {
@@ -1422,11 +1427,12 @@ int main(int argc, char **argv) {
         {.name = "buffers", .has_arg = required_argument, .val = 'b'},
         {.name = "msgsize", .has_arg = required_argument, .val = 'm'},
         {.name = "pieces", .has_arg = required_argument, .val = 'z'},
+        {.name = "odp", .has_arg = required_argument, .val = 'd'},
         {.name = "out", .has_arg = required_argument, .val = 'o'},
         {.name = "qps", .has_arg = required_argument, .val = 'q'},
         {}
     };
-    while ((option = getopt_long(argc, argv, "sa:p:rxyc:b:m:o:q:z:", options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "sa:p:rxyc:b:m:o:q:z:d:", options, NULL)) != -1) {
         switch (option) {
             case 's':
                 /* run the basic example to test connection */
@@ -1517,6 +1523,16 @@ int main(int argc, char **argv) {
                     rdma_error("Invalid qps. Should be between 1 and %d\n", MAX_QPS);
                     return -1;
                 }
+                break;
+            case 'd':
+                /* odp buffer size; this setting also activates odp feature */
+                /* odp_size < 0: invalid; = 0: vary from 1 to MAX_ODP_SIZE; > 0: use the number. Default is odp disabled */
+                odp_size = strtol(optarg, NULL, 0); 
+                if (odp_size < 0 || odp_size % PAGE_SIZE) {
+                    rdma_error("Invalid ODP size. Should be a non-negative multiple of page size (4096)\n");
+                    return -1;
+                }
+                odp_enabled = 1;
                 break;  
             case 'o':
                 /* output file to write to */
@@ -1526,8 +1542,13 @@ int main(int argc, char **argv) {
             default:
                 usage();
                 break;
-            }
         }
+    }
+
+    if (odp_enabled && (rttv2_flag || xputv2_flag)) {    
+        rdma_error("ODP only supported for v1 (non-scatter-gather) measurements for now!");
+        return -1;
+    }
 
     /* Setup shared resources */
     ret = client_setup_shared_resources();
@@ -1603,16 +1624,18 @@ int main(int argc, char **argv) {
         int min_num_concur = num_concur == 0 ? 2 : num_concur;
         int max_num_concur = num_concur == 0 ? 150 : num_concur;        /* Empirically found that anything above this number does not matter for single core */
 
-        int min_msg_size = msg_size == 0 ? 64 : msg_size;
+        int min_msg_size = msg_size == 0 ? 64   : msg_size;
         int max_msg_size = msg_size == 0 ? 4096 : msg_size;
-        int msg_size_incr = 64;
 
-        int min_num_mbuf = num_mbuf == 0 ? 1 : num_mbuf;
+        int min_num_mbuf = num_mbuf == 0 ? 1    : num_mbuf;
+        int max_num_mbuf = num_mbuf == 0 ? 1e6  : num_mbuf;
         // int max_num_mbuf = num_mbuf == 0 ? MAX_MR : num_mbuf;
-        int max_num_mbuf = num_mbuf == 0 ? 1e6 : num_mbuf;
 
-        int min_num_pieces = num_pieces == 0 ? 1 : num_pieces;
-        int max_num_pieces = num_pieces == 0 ? 16 : num_pieces;
+        int min_num_pieces = num_pieces == 0 ? 1    : num_pieces;
+        int max_num_pieces = num_pieces == 0 ? 16   : num_pieces;
+
+        long min_odp_size = odp_enabled && odp_size == 0 ? 1*PAGE_SIZE   : odp_size;
+        long max_odp_size = odp_enabled && odp_size == 0 ? MAX_ODP_SIZE  : odp_size;
 
         /* Get roundtrip latencies for ops */
         if (rtt_flag) {
@@ -1629,17 +1652,20 @@ int main(int argc, char **argv) {
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,write,read\n");
+                fprintf(fptr, "msg size,odp buf size,write,read\n");
             }
             printf("=========== RTTs =============\n");
-            printf("msg size,write,read\n");
-            for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += msg_size_incr) {
-                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_REGISTER_IMPLICIT_ODP, num_mbuf, num_qps).xput_ops;
-                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps).xput_ops;
-                printf("%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
-                if (write_to_file) {
-                    fprintf(fptr, "%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
-                    fflush(fptr);
+            printf("msg size,odp buf size,write,read\n");
+            for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) {
+                for (odp_size = min_odp_size; odp_size <= max_odp_size; odp_size *= 2) {
+                    enum mem_reg_mode mr_mode = odp_enabled ? MR_MODE_REGISTER_IMPLICIT_ODP : MR_MODE_PRE_REGISTER_WITH_ROTATE;
+                    double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, mr_mode, num_mbuf, num_qps, odp_size).xput_ops;
+                    double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, mr_mode, num_mbuf, num_qps, odp_size).xput_ops;
+                    printf("%d,%ld,%.2lf,%.2lf\n", msg_size, odp_size, wrtt, rrtt);
+                    if (write_to_file) {
+                        fprintf(fptr, "%d,%ld,%.2lf,%.2lf\n", msg_size, odp_size, wrtt, rrtt);
+                        fflush(fptr);
+                    }
                 }
             }
             if (write_to_file)  fclose(fptr);
@@ -1656,27 +1682,31 @@ int main(int argc, char **argv) {
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,window size,mbufs,write_ops,write_gbps,read_ops,read_gbps,write_pp,write_pcq,write_ecq\n");
+                fprintf(fptr, "msg size,window size,mbufs,odp buf size,write_ops,write_gbps,read_ops,read_gbps,write_pp,write_pcq,write_ecq\n");
             }
             printf("=========== Xput =============\n");
-            printf("msg size,window size,mbufs,write_ops,write_gbps,read_ops,read_gbps,write_pp,write_pcq,write_ecq\n");
+            printf("msg size,window size,mbufs,odp buf size,write_ops,write_gbps,read_ops,read_gbps,write_pp,write_pcq,write_ecq\n");
             for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
                 for (num_mbuf = min_num_mbuf; num_mbuf <= max_num_mbuf; num_mbuf += 500)    // FIXME
                     for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) {
-                        result_t wput = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps);
-                        double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? 
-                            measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps).xput_ops : 0;
-                        double rput_gbps = rput_ops * msg_size * 8 / 1e9;
-                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
-                            msg_size, num_concur, num_mbuf, wput.xput_ops, wput.xput_bps, 
-                            rput_ops, rput_gbps, 
-                            wput.cq_poll_time_percent, wput.cq_poll_count, wput.cq_empty_count);
-                        if (write_to_file) {
-                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
-                                msg_size, num_concur, num_mbuf, wput.xput_ops, wput.xput_bps,
+                        for (odp_size = min_odp_size; odp_size <= max_odp_size; odp_size *= 2) {
+                            enum mem_reg_mode mr_mode = odp_enabled ? MR_MODE_REGISTER_IMPLICIT_ODP : MR_MODE_PRE_REGISTER_WITH_ROTATE;
+                            result_t wput = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, mr_mode, num_mbuf, num_qps, odp_size);
+                            double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? measure_xput(msg_size, num_concur, RDMA_READ_OP, mr_mode, num_mbuf, num_qps, odp_size).xput_ops : 0;
+                            double rput_gbps = rput_ops * msg_size * 8 / 1e9;
+                            printf("%d,%d,%d,%ld,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
+                                msg_size, num_concur, num_mbuf, odp_size,
+                                wput.xput_ops, wput.xput_bps, 
                                 rput_ops, rput_gbps, 
                                 wput.cq_poll_time_percent, wput.cq_poll_count, wput.cq_empty_count);
-                            fflush(fptr);
+                            if (write_to_file) {
+                                fprintf(fptr, "%d,%d,%d,%ld,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
+                                    msg_size, num_concur, num_mbuf, odp_size,
+                                    wput.xput_ops, wput.xput_bps,
+                                    rput_ops, rput_gbps, 
+                                    wput.cq_poll_time_percent, wput.cq_poll_count, wput.cq_empty_count);
+                                fflush(fptr);
+                            }
                         }
                     }
             if (write_to_file)  fclose(fptr);
