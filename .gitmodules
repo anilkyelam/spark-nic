@@ -16,3 +16,6 @@
 [submodule "spark_/HiBench"]
 	path = spark_/HiBench
 	url = https://github.com/anilkyelam/HiBench
+[submodule "spark_/jol"]
+	path = spark_/jol
+	url = https://github.com/anilkyelam/jol

@@ -18,13 +18,20 @@ import numpy as np
 # Constants
 
 # Structs
+class Object:
+    addr = None
+    size = None
+    depth = None 
+
 class Record:
+    shuffleid = None
     mapid = None
     idx = None
-    addr = None
-    addrk = None
-    addrv = None
-
+    count = 0
+    objects = None
+    gaps = None
+    startaddr = None
+    endaddr = None
 
 # check for outliers in a list of numbers
 def find_outliers(array):  
@@ -52,58 +59,75 @@ def main():
 
     # Get all data
     datadir = os.path.abspath(datadir)
-    files = "{0}/container*/stdout".format(datadir)
+    files = "{0}/records*".format(datadir)
     records = []
     for filename in glob.glob(files):
         with open(filename, 'r') as file:                                                                                                                                                                                                                                             
             for line in file:
                 vals = line.split(',')
-                if len(vals) == 6: 
-                    r = Record()
-                    r.mapid = int(vals[0])
-                    r.idx = int(vals[1])
-                    r.addr = int(vals[4])      # object ordering varies across runs!
-                    r.addrk = int(vals[2])
-                    r.addrv = int(vals[3])
-                    # r.addr = int(vals[2])
-                    # r.addrk = int(vals[3])
-                    # r.addrv = int(vals[4])
-                    records.append(r)
-                    # print(vals)
-                    # print(mapId, recordId, base, base1, base2)
+                if len(vals) < 4: 
+                    print("ERROR! Expecting at least 3 columns for any record, found otherwise in {}".format(filename))
+                    return -1
+
+                r = Record()
+                r.shuffleid = int(vals[0])
+                r.mapid = int(vals[1])
+                r.idx = int(vals[2])
+                r.count = int(vals[3])
+                r.objects = []
+                r.gaps = []
+                lastaddr = None
+                for i in range(r.count):
+                    o = Object()
+                    o.addr = int(vals[4+i*3])
+                    o.size = int(vals[5+i*3])
+                    o.depth = int(vals[6+i*3])
+                    r.objects.append(o)
+                    if lastaddr:    r.gaps.append(o.addr - lastaddr)
+                    lastaddr = o.addr + o.size
+                    if not r.startaddr or o.addr < r.startaddr:     r.startaddr = o.addr
+                    if not r.endaddr or lastaddr > r.endaddr:       r.endaddr = lastaddr
+                records.append(r)
         # print(len(records))
 
-    # Map tasks
+    # Maps and shuffles
+    shuffles = set([r.shuffleid for r in records])
     maps = set([r.mapid for r in records])
-    print("Available map tasks: " + str(maps))
+    print("Available shuffles: " + str(shuffles))
+    # print("Available maps: " + str(maps) + ", shuffles: " + str(shuffles))
 
-    # Save them for plotting
-    for mapId in maps:
-        datafile = "memdata{0}.csv".format(mapId)
+    # Save stats per shuffle
+    for shuffleid in shuffles:
+        datafile = "shuffle{}.csv".format(shuffleid)
         outfile = os.path.join(expdir, datafile)
         prev_addr = None
 
-        # Check for outliers
-        records_scoped = [r for r in records if r.mapid == mapId]
-        outliers = find_outliers([r.addr for r in records_scoped])
-        outliers += find_outliers([r.addrk for r in records_scoped])
-        outliers += find_outliers([r.addrv for r in records_scoped])
-        # print([(i, records[i].addr, records[i].addrk, records[i].addrv) for i in set(outliers)])
-        outlier_records = [records_scoped[i] for i in set(outliers)]
-        for r in outlier_records:
-            records_scoped.remove(r)
-        print("Removed {0} outliers.".format(len(outlier_records)))
-
+        records_scoped = [r for r in records if r.shuffleid == shuffleid]
         with open(os.path.join("", outfile), 'w') as csvfile:
             first = True
-            for r in records_scoped:
+            for i, r in enumerate(records_scoped):
                 if first:
-                    fieldnames = ["idx", "address", "addressk", "addressv", "offsetk", "offsetv","offset"]
+                    fieldnames = ["idx", "objects", "depth", "startaddr", "span", "gaps"]
                     writer = csv.writer(csvfile)
                     writer.writerow(fieldnames)
                     first = False
-                writer.writerow([r.idx, r.addr, r.addrk, r.addrv, r.addrk-r.addr, r.addrv-r.addr, 0 if prev_addr is None else r.addr - prev_addr])
-                prev_addr = r.addr
+                depths = [o.depth for o in r.objects]
+                writer.writerow([i, r.count, np.mean(depths), r.startaddr, r.endaddr - r.startaddr, sum(r.gaps)])
+
+    # # Save metadata for all shuffles
+    # datafile = "info.csv".format(shuffleid)
+    # outfile = os.path.join(expdir, datafile)
+    # with open(os.path.join("", outfile), 'w') as csvfile:
+    #     for shuffleid in shuffles:
+    #         if first:
+    #             fieldnames = ["shuffleid", "objects", "depth"]
+    #             writer = csv.writer(csvfile)
+    #             writer.writerow(fieldnames)
+    #             first = False
+    #         depths = [o.depth for o in r.objects]
+    #         writer.writerow([i, r.count, np.mean(depths), r.startaddr, r.endaddr - r.startaddr, sum(r.gaps)])
+
+
     
 
 if __name__ == "__main__":

@@ -1,47 +1,86 @@
+#
+# Commands for generating various plots
+#
 
-expname=$1
-if [[ -z "$expname" ]]; then    
-    dir=$(find out/ -maxdepth 1 -type d | tail -n1);   # Latest by default
-    expname=$(basename $dir)
+# Parse command line arguments
+for i in "$@"
+do
+case $i in
+    -g|--gen)                   # re-run experiments to generate data
+    gen=1
+    ;;
+
+    -d=*|--runid=*)             # provide run id if plotting data from previous runs; 
+    RUNID_GIVEN="${i#*=}"       # ignored if --gen is set
+    ;;
+
+    -c=*|--readme=*)            # optional comments for this run; 
+    README="${i#*=}"            # saved along with data for future ref
+    ;;
+    
+    *)                          # unknown option
+    ;;
+esac
+done
+
+
+# Folders
+CUR_PATH=`realpath $0`
+DIR=$(dirname $CUR_PATH)
+DATADIR=${DIR}/out
+mkdir -p ${DATADIR}
+
+# Figure out data location
+if [[ $gen ]]; then   
+    runid=$(date '+%m-%d-%H-%M');    # unique id
+    mkdir -p $DATADIR/$runid
+else         
+    if [[ -z "$RUNID_GIVEN" ]]; then
+        echo "ERROR! Provide runid under data/ for plotting, or use --gen to generate data"
+        exit 1
+    fi           
+    runid=$RUNID_GIVEN; 
+    if [ ! -d $DATADIR/$runid ]; then
+        echo "ERROR! Data for $runid not found under $DATADIR"
+        exit 1
+    fi
 fi
-dir=out/$expname
-echo "Looking at exp: $expname"
 
-# Parse data from logs
-# python parse.py -i ${expname}
-
-idx=${2:-0}
-datafile=$dir/memdata${idx}.csv
-if [ ! -f $datafile ]; then
-    echo "Data $datafile not found!"
-    exit 1
+RUNDIR=$DATADIR/$runid
+if [[ $README ]]; then
+    echo "$README" > $RUNDIR/readme
 fi
 
-# Generate plots
-plotdir="$dir/plots"
-mkdir -p $plotdir
-# python ../tools/plot.py -z scatter -d $datafile -xc "idx" -yc "address" -of png -o $plotdir/layout.png -t "Memory layout" 
-# display $plotdir/layout.png &
-python ../tools/plot.py -z scatter -d $datafile -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed11.png -t "Memory layout" --xmin 49800 --xmax 50500 --ymin 2.4564e10 --ymax 2.4574e10
-display $plotdir/layout-zoomed11.png &
-# python ../tools/plot.py -z scatter -d $datafile -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed21.png -t "Memory layout" --xmin 50000 --xmax 51000 --ymin 2.5079e10 --ymax 2.5085e10
-# display $plotdir/layout-zoomed21.png &
-# python ../tools/plot.py -z scatter -d $datafile -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed3.png -t "Memory layout" --xmin 100000 --xmax 100200 --ymin 2.395975e10 --ymax 2.396125e10
-# display $plotdir/layout-zoomed3.png &
-# python ../tools/plot.py -z scatter -d $datafile -xc "idx" -yc "address" -of png -o $plotdir/layout-zoomed4.png -t "Memory layout" --ymin 2.394700e10 --ymax 2.394705e10
-# display $plotdir/layout-zoomed4.png &
-# # python ../tools/plot.py -z cdf -d $datafile -yc "address" -xl "Address (Bytes)" -of png -o $plotdir/layout-cdf.png -nm -t "Memory layout CDF"
-# # display $plotdir/layout-cdf.png &
+# plots location
+PLOTDIR=${RUNDIR}/plots
+PLOTEXT=png                 # supported: png or pdf
+mkdir -p ${PLOTDIR} 
 
-# python ../tools/plot.py -z cdf -d $datafile -yc "offsetk" -xl "Offset (Bytes)" -of png -o $plotdir/keyoffset.png -nm -nh 0.1 -nt 0.1 --xmin -200 --xmax 200
-# display $plotdir/keyoffset.png &
+# #
+# # START PLOTTING
+# # (Uncomment a section as required)
+# #
 
-# python ../tools/plot.py -z cdf -d $datafile -yc "offsetv" -xl "Offset (Bytes)" -of png -o $plotdir/valoffset.png -nm -nh 0.1 -nt 0.1 --xmin -200 --xmax 200
-# display $plotdir/valoffset.png &
 
-# python ../tools/plot.py -z cdf -d $datafile -yc "offset" -xl "Offset (Bytes)" -of png -o $plotdir/recoffset.png -nm -nt 0.2 --xmin 0 --xmax 10000
-# display $plotdir/recoffset.png &
-# python ../tools/plot.py -z cdf -d $datafile -yc "offset" -xl "Offset (Bytes)" -of png -o $plotdir/recoffset-tail.png -nm -t "Offset b/w consecutive objects" -nh 98 --xmin 7500 --ymin 0.975 --ymax 1.005 --hline 1 --xlog
-# display $plotdir/recoffset-tail.png &
-# python ../tools/plot.py -z cdf -d $datafile -yc "offset" -xl "Offset (Bytes)" -of png -o $plotdir/recoffset-tail2.png -nm -t "Offset b/w consecutive objects" -nh 98 --xmin 7500 --ymin 0.999 --ymax 1.0001 --hline 1 --xlog
-# display $plotdir/recoffset-tail2.png &
+#==============================================================#
+
+# # Pagerank object layout for shuffles
+wtype=graph
+wname=pagerank
+if [[ $gen ]]; then
+    bash ${DIR}/hibench.sh --save --name=${runid} -wt=graph -wn=pagerank
+    python parse.py -i ${runid}
+fi
+
+for f in `ls ${RUNDIR}/shuffle*`; do 
+    label=`basename $f`
+    plots="$plots -d $f -l $label"
+done
+
+plotfile=${PLOTDIR}/span_${wtype}_${wname}_${runid}.${PLOTEXT}
+python ../tools/plot.py ${plots} -z cdf -yc "span" -o ${plotfile} -of ${PLOTEXT} 
+display ${plotfile} &
+
+plotfile=${PLOTDIR}/gaps_${wtype}_${wname}_${runid}.${PLOTEXT}
+python ../tools/plot.py ${plots} -z cdf -yc "gaps" -o ${plotfile} -of ${PLOTEXT} 
+display ${plotfile} &
