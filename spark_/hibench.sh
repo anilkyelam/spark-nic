@@ -101,7 +101,7 @@ bash ${SPARK_HOME}/sbin/start-history-server.sh
 
 # Prepare tmp directory and set conf to write logs
 mkdir -p ${TMP_DIR}
-mkdir -p ${TMP_OUTDIR}
+mkdir -p ${TMP_OUTDIR} 
 sed -i "s/^spark.record.dir.*$/spark.record.dir \/home\/ayelam\/spark-nic\/spark_\/tmp\/${GUID}\//" ${HIBENCH_DIR}/conf/spark.conf       #FIXME: hardcoded path
 
 # Run bench

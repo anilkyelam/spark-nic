@@ -107,12 +107,13 @@ def main():
             first = True
             for i, r in enumerate(records_scoped):
                 if first:
-                    fieldnames = ["idx", "objects", "depth", "startaddr", "span", "gaps"]
+                    fieldnames = ["idx", "objects", "size", "depth", "startaddr", "span", "gaps"]
                     writer = csv.writer(csvfile)
                     writer.writerow(fieldnames)
                     first = False
                 depths = [o.depth for o in r.objects]
-                writer.writerow([i, r.count, np.mean(depths), r.startaddr, r.endaddr - r.startaddr, sum(r.gaps)])
+                sizes = [o.size for o in r.objects]
+                writer.writerow([i, r.count, sum(sizes), np.mean(depths), r.startaddr, r.endaddr - r.startaddr, sum(r.gaps)])
 
     # # Save metadata for all shuffles
     # datafile = "info.csv".format(shuffleid)
