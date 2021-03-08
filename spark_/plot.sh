@@ -65,10 +65,10 @@ fi
 #==============================================================#
 
 # # Pagerank object layout for shuffles
-# wtype=graph
-# wname=pagerank
+wtype=ml
+wname=svm
 # for i in "graph pagerank" "graph nweight" "ml kmeans" "ml xgboost" "ml svm" "micro terasort" "micro wordcount" "streaming repartition"
-for i in "graph pagerank 03-04-05-10" "graph nweight 03-04-05-14" "ml kmeans 03-04-05-18" "ml svm 03-04-05-24" "micro terasort 03-04-05-29"
+for i in "graph pagerank 03-04-05-10" "graph nweight 03-04-05-14" "ml svm 03-04-05-25" "micro terasort 03-04-05-29"
 do
     set -- $i
     wtype=$1
@@ -86,11 +86,12 @@ do
     PLOTEXT=png                 # supported: png or pdf
     mkdir -p ${PLOTDIR}
 
-    # if [[ $gen ]]; then
+    if [[ $gen ]]; then
         # bash ${DIR}/hibench.sh --save --name=${runid} -wt=${wtype} -wn=${wname} --rebuild
-        # python parse.py -i ${runid}
-    # fi
+        python parse.py -i ${runid}
+    fi
 
+    mdatafile=${RUNDIR}/metadata.csv
     plots=
     for f in `ls ${RUNDIR}/shuffle*`; do 
         label=`basename $f`
@@ -98,14 +99,30 @@ do
     done
 
     plotfile=${PLOTDIR}/size_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py ${plots} -z cdf -yc "size" -xl "Total Size (B)" -fs 10 -t "$wtype/$wname" -o ${plotfile} -of ${PLOTEXT} 
+    python ../tools/plot.py -d ${mdatafile} -z bar -yc "record size" -yl "record size (bytes)" -xc "name" -xl "shuffles" -fs 11 --ymax 100 -o ${plotfile} -of ${PLOTEXT} 
     display ${plotfile} &
 
     plotfile=${PLOTDIR}/objects_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py ${plots} -z cdf -yc "objects" -xl "Objects per record" -fs 10 -t "$wtype/$wname" -o ${plotfile} -of ${PLOTEXT} 
+    python ../tools/plot.py -d ${mdatafile} -z bar -yc "objects per record" -xc "name" -xl "shuffles" -fs 11 --ymax 5 -o ${plotfile} -of ${PLOTEXT} 
+    display ${plotfile} &
+    
+    plotfile=${PLOTDIR}/records_per_map_${wtype}_${wname}_${runid}.${PLOTEXT}
+    python ../tools/plot.py -d ${mdatafile} -z bar -yc "partition size" -yl "records per map" -xc "name" -xl "shuffles" -fs 11  -o ${plotfile} -of ${PLOTEXT} 
+    display ${plotfile} &
+
+    plotfile=${PLOTDIR}/records_per_shuffle_${wtype}_${wname}_${runid}.${PLOTEXT}
+    python ../tools/plot.py -d ${mdatafile} -z bar -yc "records" -yl "records per shuffle" -xc "name" -xl "shuffles" -fs 11 -o ${plotfile} -of ${PLOTEXT} 
+    display ${plotfile} &
+
+    plotfile=${PLOTDIR}/depth_${wtype}_${wname}_${runid}.${PLOTEXT}
+    python ../tools/plot.py -d ${mdatafile} -z bar -yc "record depth" -xc "name" -xl "shuffles" -fs 11 --ymax 5 -o ${plotfile} -of ${PLOTEXT} 
     display ${plotfile} &
 
     plotfile=${PLOTDIR}/gaps_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py ${plots} -z cdf -yc "gaps" -xl "Blank space per record (B)" -fs 10 -t "$wtype/$wname" -o ${plotfile} -of ${PLOTEXT} 
+    python ../tools/plot.py ${plots} -z cdf -yc "gaps" -xl "Space within record (B)" -fs 10 -o ${plotfile} -of ${PLOTEXT} 
+    display ${plotfile} &
+    
+    plotfile=${PLOTDIR}/offset_${wtype}_${wname}_${runid}.${PLOTEXT}
+    python ../tools/plot.py ${plots} -z cdf -yc "offset" -xl "Space b/w records (B)" -fs 10 --xlog -nt 0.1 -o ${plotfile} -of ${PLOTEXT} 
     display ${plotfile} &
 done

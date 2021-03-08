@@ -97,23 +97,45 @@ def main():
     # print("Available maps: " + str(maps) + ", shuffles: " + str(shuffles))
 
     # Save stats per shuffle
-    for shuffleid in shuffles:
-        datafile = "shuffle{}.csv".format(shuffleid)
-        outfile = os.path.join(expdir, datafile)
-        prev_addr = None
+    mdatafile = os.path.join(expdir, "metadata.csv")
+    with open(mdatafile, 'w') as mfile:      
+        fieldnames = ["shuffle id", "name", "maps", "records", "objects per record", "record size", "record depth", "partition size"]
+        mwriter = csv.writer(mfile)
+        mwriter.writerow(fieldnames)
 
-        records_scoped = [r for r in records if r.shuffleid == shuffleid]
-        with open(os.path.join("", outfile), 'w') as csvfile:
-            first = True
-            for i, r in enumerate(records_scoped):
-                if first:
-                    fieldnames = ["idx", "objects", "size", "depth", "startaddr", "span", "gaps"]
-                    writer = csv.writer(csvfile)
-                    writer.writerow(fieldnames)
-                    first = False
-                depths = [o.depth for o in r.objects]
-                sizes = [o.size for o in r.objects]
-                writer.writerow([i, r.count, sum(sizes), np.mean(depths), r.startaddr, r.endaddr - r.startaddr, sum(r.gaps)])
+        for shuffleid in shuffles:
+            datafile = "shuffle{}.csv".format(shuffleid)
+            outfile = os.path.join(expdir, datafile)
+            prev_addr = None
+            partition_size = 0
+
+            records_by_shuffle = [r for r in records if r.shuffleid == shuffleid]
+            shuffle_maps = set([r.mapid for r in records_by_shuffle])
+            with open(outfile, 'w') as csvfile:
+                first = True
+                for mapid in shuffle_maps:
+                    records_by_map = [r for r in records_by_shuffle if r.mapid == mapid]
+                    lastrecord = None
+                    partition_size = len(records_by_map)
+                    for i, r in enumerate(records_by_map):
+                        if first:
+                            fieldnames = ["idx", "mapid", "objects", "size", "depth", "startaddr", "span", "gaps", "offset"]
+                            dwriter = csv.writer(csvfile)
+                            dwriter.writerow(fieldnames)
+                            first = False
+                        depths = [o.depth for o in r.objects]
+                        sizes = [o.size for o in r.objects]
+                        offset = (r.objects[0].addr - lastrecord) if lastrecord else 0
+                        lastrecord = r.objects[0].addr
+                        dwriter.writerow([i, r.mapid, r.count, sum(sizes), np.max(depths), r.startaddr, r.endaddr - r.startaddr, sum(r.gaps), offset])
+
+            # shuffle metadata
+            sname = "shuffle{}".format(shuffleid)
+            num_records = len(records_by_shuffle)
+            obj_per_record = records_by_shuffle[0].count if num_records > 0 else 0
+            rec_size = sum([o.size for o in records_by_shuffle[0].objects]) if num_records > 0 else 0
+            rec_depth = np.max([o.depth for o in records_by_shuffle[0].objects]) if num_records > 0 else 0
+            mwriter.writerow([shuffleid, sname, len(shuffle_maps), num_records, obj_per_record, rec_size, rec_depth, partition_size])
 
     # # Save metadata for all shuffles
     # datafile = "info.csv".format(shuffleid)
