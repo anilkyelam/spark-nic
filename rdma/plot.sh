@@ -611,21 +611,46 @@ mkdir -p ${PLOTDIR}
 
 # # RTT numbers for various data transfer modes (I never looked at RTTs before)
 # # runs: 
+# vary=0
+# msgsize=64
+# datafile=${RUNDIR}/odp_rtts_${msgsize}B
+# plotfile=${PLOTDIR}/odp_rtts_${msgsize}B.${PLOTEXT}
+# if [[ $gen ]]; then
+#     export MLX5_SHUT_UP_BF=1  
+#     bash run.sh -o="--rtt -m ${msgsize} --odp ${vary} -o ${datafile}"
+# elif [ ! -f $datafile ]; then
+#     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+#     exit 1
+# fi
+# python ../tools/plot.py -d ${datafile} \
+#     -xc "odp buf size" -xl "ODP Buffer Size (pages)"   \
+#     -yc "write" -l "Remote Write" -ls solid  \
+#     -yc "read" -l "Remote Read" -ls dashed  \
+#     -yl "RTT (micro-sec)" --ltitle "Operation" \
+#     -o ${plotfile} -of ${PLOTEXT}  -fs 10 --xlog --ylog
+# display ${plotfile} &
+
+#================================================================#
+
+# # RDMA ODP read/write xput plots 
+# # (changing payload size for various window sizes)
+# # (relevant runs: )
 vary=0
+concur=64
 msgsize=64
-datafile=${RUNDIR}/odp_rtts_${msgsize}B
-plotfile=${PLOTDIR}/odp_rtts_${msgsize}B.${PLOTEXT}
+datafile=${RUNDIR}/odp_xput_${msgsize}B_${concur}
+plotfile=${PLOTDIR}/odp_xput_${msgsize}B_${concur}.${PLOTEXT}
 if [[ $gen ]]; then
-    export MLX5_SHUT_UP_BF=1  
-    bash run.sh -o="--rtt -m ${msgsize} --odp ${vary} -o ${datafile}"
+    bash run.sh -o="--xput -c ${concur} -m ${msgsize} --odp ${vary} -o ${datafile}"
 elif [ ! -f $datafile ]; then
     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
     exit 1
 fi
+
 python ../tools/plot.py -d ${datafile} \
     -xc "odp buf size" -xl "ODP Buffer Size (pages)"   \
-    -yc "write" -l "Remote Write" -ls solid  \
-    -yc "read" -l "Remote Read" -ls dashed  \
-    -yl "RTT (micro-sec)" --ltitle "Operation" \
-    -o ${plotfile} -of ${PLOTEXT}  -fs 10 --xlog --ylog
+    -yc "write_ops" -l "Remote Write" -ls solid     \
+    -yl "Xput (Mops)" --ltitle "Operation"      \
+    -o ${plotfile} -of ${PLOTEXT}  -fs 10 --xlog  --ymul 1e-6 
 display ${plotfile} &
+
