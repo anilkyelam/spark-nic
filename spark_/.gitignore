@@ -31,3 +31,6 @@ out/**/data/*
 out/**/*.csv
 spark.log
 
+# spark backup folder
+spark2/
+

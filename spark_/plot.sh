@@ -68,7 +68,8 @@ fi
 wtype=ml
 wname=svm
 # for i in "graph pagerank" "graph nweight" "ml kmeans" "ml xgboost" "ml svm" "micro terasort" "micro wordcount" "streaming repartition"
-for i in "graph pagerank 03-04-05-10" "graph nweight 03-04-05-14" "ml svm 03-04-05-25" "micro terasort 03-04-05-29"
+# for i in "graph pagerank 03-04-05-10" "graph nweight 03-04-05-14" "ml svm 03-04-05-25" "micro terasort 03-04-05-29"
+for i in "sql aggregation 03-11-10-20" "sql join 03-11-10-24"
 do
     set -- $i
     wtype=$1
@@ -79,17 +80,17 @@ do
     echo $runid
 
     RUNDIR=$DATADIR/$runid
-    echo "$wtype-$wname" > $RUNDIR/readme
+    echo "$wtype-$wname with large scale" > $RUNDIR/readme
 
     # plots location
     PLOTDIR=${RUNDIR}/plots
     PLOTEXT=png                 # supported: png or pdf
     mkdir -p ${PLOTDIR}
 
-    if [[ $gen ]]; then
-        # bash ${DIR}/hibench.sh --save --name=${runid} -wt=${wtype} -wn=${wname} --rebuild
-        python parse.py -i ${runid}
-    fi
+    # if [[ $gen ]]; then
+    #     bash ${DIR}/hibench.sh --save --name=${runid} -wt=${wtype} -wn=${wname} #--rebuild
+    #     python parse.py -i ${runid}
+    # fi
 
     mdatafile=${RUNDIR}/metadata.csv
     plots=
