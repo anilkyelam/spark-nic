@@ -65,32 +65,31 @@ fi
 #==============================================================#
 
 # # Pagerank object layout for shuffles
-wtype=ml
-wname=svm
-# for i in "graph pagerank" "graph nweight" "ml kmeans" "ml xgboost" "ml svm" "micro terasort" "micro wordcount" "streaming repartition"
+for i in "ml svm"
+# for i in "graph pagerank" "graph nweight" "ml kmeans" "ml svm" "micro terasort" "streaming repartition" "sql join"
 # for i in "graph pagerank 03-04-05-10" "graph nweight 03-04-05-14" "ml svm 03-04-05-25" "micro terasort 03-04-05-29"
-for i in "sql aggregation 03-11-10-20" "sql join 03-11-10-24"
+# for i in "sql aggregation 03-11-10-20" "sql join 03-11-10-24"
 do
     set -- $i
     wtype=$1
     wname=$2
     echo $wtype $wname
-    # runid=$(date '+%m-%d-%H-%M');    # unique id        FIXME!!
-    runid=$3
+    runid=$(date '+%m-%d-%H-%M');    # unique id        FIXME!!
+    # runid=$3
     echo $runid
 
     RUNDIR=$DATADIR/$runid
-    echo "$wtype-$wname with large scale" > $RUNDIR/readme
+    echo "$wtype-$wname with baseshuffle handle (simple) instrumentation" > $RUNDIR/readme
 
     # plots location
     PLOTDIR=${RUNDIR}/plots
     PLOTEXT=png                 # supported: png or pdf
     mkdir -p ${PLOTDIR}
 
-    # if [[ $gen ]]; then
-    #     bash ${DIR}/hibench.sh --save --name=${runid} -wt=${wtype} -wn=${wname} #--rebuild
-    #     python parse.py -i ${runid}
-    # fi
+    if [[ $gen ]]; then
+        bash ${DIR}/hibench.sh --save --name=${runid} -wt=${wtype} -wn=${wname} --rebuild
+        python parse.py -i ${runid}
+    fi
 
     mdatafile=${RUNDIR}/metadata.csv
     plots=
@@ -99,31 +98,31 @@ do
         plots="$plots -d $f -l $label"
     done
 
-    plotfile=${PLOTDIR}/size_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py -d ${mdatafile} -z bar -yc "record size" -yl "record size (bytes)" -xc "name" -xl "shuffles" -fs 11 --ymax 100 -o ${plotfile} -of ${PLOTEXT} 
-    display ${plotfile} &
+    # plotfile=${PLOTDIR}/size_${wtype}_${wname}_${runid}.${PLOTEXT}
+    # python ../tools/plot.py -d ${mdatafile} -z bar -yc "record size" -yl "record size (bytes)" -xc "name" -xl "shuffles" -fs 11 --ymax 100 -o ${plotfile} -of ${PLOTEXT} 
+    # display ${plotfile} &
 
-    plotfile=${PLOTDIR}/objects_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py -d ${mdatafile} -z bar -yc "objects per record" -xc "name" -xl "shuffles" -fs 11 --ymax 5 -o ${plotfile} -of ${PLOTEXT} 
-    display ${plotfile} &
+    # plotfile=${PLOTDIR}/objects_${wtype}_${wname}_${runid}.${PLOTEXT}
+    # python ../tools/plot.py -d ${mdatafile} -z bar -yc "objects per record" -xc "name" -xl "shuffles" -fs 11 --ymax 5 -o ${plotfile} -of ${PLOTEXT} 
+    # display ${plotfile} &
     
-    plotfile=${PLOTDIR}/records_per_map_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py -d ${mdatafile} -z bar -yc "partition size" -yl "records per map" -xc "name" -xl "shuffles" -fs 11  -o ${plotfile} -of ${PLOTEXT} 
-    display ${plotfile} &
+    # plotfile=${PLOTDIR}/records_per_map_${wtype}_${wname}_${runid}.${PLOTEXT}
+    # python ../tools/plot.py -d ${mdatafile} -z bar -yc "partition size" -yl "records per map" -xc "name" -xl "shuffles" -fs 11  -o ${plotfile} -of ${PLOTEXT} 
+    # display ${plotfile} &
 
-    plotfile=${PLOTDIR}/records_per_shuffle_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py -d ${mdatafile} -z bar -yc "records" -yl "records per shuffle" -xc "name" -xl "shuffles" -fs 11 -o ${plotfile} -of ${PLOTEXT} 
-    display ${plotfile} &
+    # plotfile=${PLOTDIR}/records_per_shuffle_${wtype}_${wname}_${runid}.${PLOTEXT}
+    # python ../tools/plot.py -d ${mdatafile} -z bar -yc "records" -yl "records per shuffle" -xc "name" -xl "shuffles" -fs 11 -o ${plotfile} -of ${PLOTEXT} 
+    # display ${plotfile} &
 
-    plotfile=${PLOTDIR}/depth_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py -d ${mdatafile} -z bar -yc "record depth" -xc "name" -xl "shuffles" -fs 11 --ymax 5 -o ${plotfile} -of ${PLOTEXT} 
-    display ${plotfile} &
+    # plotfile=${PLOTDIR}/depth_${wtype}_${wname}_${runid}.${PLOTEXT}
+    # python ../tools/plot.py -d ${mdatafile} -z bar -yc "record depth" -xc "name" -xl "shuffles" -fs 11 --ymax 5 -o ${plotfile} -of ${PLOTEXT} 
+    # display ${plotfile} &
 
-    plotfile=${PLOTDIR}/gaps_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py ${plots} -z cdf -yc "gaps" -xl "Space within record (B)" -fs 10 -o ${plotfile} -of ${PLOTEXT} 
-    display ${plotfile} &
+    # plotfile=${PLOTDIR}/gaps_${wtype}_${wname}_${runid}.${PLOTEXT}
+    # python ../tools/plot.py ${plots} -z cdf -yc "gaps" -xl "Space within record (B)" -fs 10 -o ${plotfile} -of ${PLOTEXT} 
+    # display ${plotfile} &
     
-    plotfile=${PLOTDIR}/offset_${wtype}_${wname}_${runid}.${PLOTEXT}
-    python ../tools/plot.py ${plots} -z cdf -yc "offset" -xl "Space b/w records (B)" -fs 10 --xlog -nt 0.1 -o ${plotfile} -of ${PLOTEXT} 
-    display ${plotfile} &
+    # plotfile=${PLOTDIR}/offset_${wtype}_${wname}_${runid}.${PLOTEXT}
+    # python ../tools/plot.py ${plots} -z cdf -yc "offset" -xl "Space b/w records (B)" -fs 10 --xlog -nt 0.1 -o ${plotfile} -of ${PLOTEXT} 
+    # display ${plotfile} &
 done
