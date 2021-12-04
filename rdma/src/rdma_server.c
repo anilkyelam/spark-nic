@@ -302,6 +302,7 @@ static int send_server_metadata_to_client(int qp_num)
             client_qp_metadata_attr[qp_num].length /* what size to allocate */, 
             (IBV_ACCESS_LOCAL_WRITE|
             IBV_ACCESS_REMOTE_READ|
+            IBV_ACCESS_REMOTE_ATOMIC|
             IBV_ACCESS_REMOTE_WRITE) /* access permissions */);
     if(!server_qp_buffer_mr[qp_num]){
         rdma_error("Server failed to create a buffer \n");

@@ -7,7 +7,7 @@ for i in "$@"
 do
 case $i in
     -g|--gen)                 # re-run experiments to generate data
-    gen=1
+    REGEN=1
     ;;
 
     -d=*|--runid=*)             # provide run id if plotting data from previous runs; 
@@ -31,7 +31,7 @@ DATADIR=${DIR}/data
 mkdir -p ${DATADIR}
 
 # Figure out data location
-if [[ $gen ]]; then   
+if [[ $REGEN ]]; then   
     runid=$(date '+%m-%d-%H-%M');    # unique id
     mkdir -p $DATADIR/$runid
 else         
@@ -48,7 +48,7 @@ fi
 
 RUNDIR=$DATADIR/$runid
 if [[ $README ]]; then
-    echo "$README" > $RUNDIR/readme
+    echo "$README" >> $RUNDIR/readme
 fi
 
 # plots location
@@ -67,10 +67,10 @@ mkdir -p ${PLOTDIR}
 # # # RDMA read/write RTT plot
 # datafile=${RUNDIR}/rtts
 # plotfile=${PLOTDIR}/rtt_${runid}.${PLOTEXT}
-# if [[ $gen ]]; then
+# if [[ $REGEN ]]; then
 #   bash run.sh -o="-r -o ${datafile}"
 # elif [ ! -f $datafile ]; then
-#     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+#     echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
 #     exit 1
 # fi
 # python ../tools/plot.py -d ${datafile} \
@@ -89,10 +89,10 @@ mkdir -p ${PLOTDIR}
 # do 
 #     echo "Running xput with $concur concurrent requests"; 
 #     datafile=${RUNDIR}/xput_window_${concur}
-#     if [[ $gen ]]; then
+#     if [[ $REGEN ]]; then
 #         bash run.sh -o="-x -c ${concur} -m ${vary} -o ${datafile}"
 #     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
+#         echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
 #         exit 1
 #     fi
 #     files="$files -d ${datafile} -l $concur"
@@ -130,527 +130,40 @@ mkdir -p ${PLOTDIR}
 #================================================================#
 
 # # RDMA read/write xput plots 
-# # (changing window size for various payload sizes)
-# # (relevant runs: 12-20-23-32, )
-# vary=0
-# for msgsize in 8 32 64 128 256 512 1024 2048 4096; 
-# do 
-#     echo "Running xput with $msgsize B msg size for various window sizes"; 
-#     datafile=${RUNDIR}/xput_msgsize_${msgsize}
-#     if [[ $gen ]]; then
-#         bash run.sh -o="-x -c ${vary} -m ${msgsize} -o ${datafile}"
-#     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#         exit 1
-#     fi
-#     files="$files -d ${datafile} -l ${msgsize}B"
-# done
+# # (for various window sizes)
+qp=2
+for concur in 1; 
+do 
+    echo "Running xput with $concur concurrent requests"; 
+    datafile=${RUNDIR}/xput_window_${concur}
+    if [[ $REGEN ]]; then
+        bash run.sh -o="-x -c ${concur} -o ${datafile}"
+    elif [ ! -f $datafile ]; then
+        echo "ERROR! Datafile $datafile not found for this run. Try --regen or another runid."
+        exit 1
+    fi
+    files="$files -d ${datafile} -l $concur"
+done
 
-# plotfile=${PLOTDIR}/write_xput_${runid}.${PLOTEXT}
-# python ../tools/plot.py $files                      \
-#     -xc "window size" -xl "outstanding requests"    \
-#     -yc "write_gbps" -yl "Goodput (gbps)"           \
-#     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size"
+# plotfile=${PLOTDIR}/write_xput_${runid}.png
+# python3 ../tools/plot.py -d data/12-01-15-18/xput_window_1          \
+#     -xc "concur" -xl "window size"   \
+#     -yc "cas_ops" -l "cas" -yl "MOPS" --ymul 1e-6  \
+#     -yc "write_ops" -l "write"    \
+#     -yc "read_ops" -l "read"    \
+#     -o ${plotfile} -of png -fs 11 --ltitle "OPS"
 # display ${plotfile} &
 
-# plotfile=${PLOTDIR}/write_xput_ops_${runid}.${PLOTEXT}
-# python ../tools/plot.py $files                          \
-#     -xc "window size" -xl "outstanding requests"        \
-#     -yc "write_ops" -yl "million ops/sec"  --ymul 1e-6  \
-#     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
-# display ${plotfile} &
-
-# plotfile=${PLOTDIR}/read_xput_${runid}.${PLOTEXT}
-# python ../tools/plot.py $files                      \
-#     -xc "window size" -xl "outstanding requests"    \
-#     -yc "read_gbps" -yl "Goodput (gbps)"            \
-#     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" --xlog
-# display ${plotfile} &
-
-# msgsize=64
-# plotfile=${PLOTDIR}/write_xput_msgsize${msgsize}_${runid}.${PLOTEXT}
-# python ../tools/plot.py -d  ${RUNDIR}/xput_msgsize_${msgsize}   \
-#     -xc "window size" -xl "outstanding requests"                \
-#     -yc "write_ops" -yl "million ops/sec"  --ymul 1e-6          \
-#     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" --xlog
-# display ${plotfile} &
-
-
-#================================================================#
-
-# # Cost of memory registration in datapath
-# # RTT numbers with mr register and deregister in datapath
-# # (relevant runs: 01-03-22-38 )
-# datafile=${RUNDIR}/rtts_mr
-# plotfile=${PLOTDIR}/rtt_mr_${runid}.${PLOTEXT}
-# if [[ $gen ]]; then
-#     # TODO: Need to set mr_mode to MR_MODE_REGISTER_IN_DATAPTH in the client
-#     bash run.sh -o="-r -o ${datafile}"     
-# elif [ ! -f $datafile ]; then
-#     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#     exit 1
-# fi
-# python ../tools/plot.py -d ${datafile} \
+# plotfile=${PLOTDIR}/write_xput_ops_${runid}.png
+# python ../tools/plot.py $files          \
 #     -xc "msg size" -xl "msg size (B)"   \
-#     -yc "write" -yc "read" -yl "RTT (micro-sec)" \
-#     -o ${plotfile} -of ${PLOTEXT} 
+#     -yc "write_ops" -yl "Goodput (ops)"    \
+#     -o ${plotfile} -of png -fs 11 --ltitle "window size"
 # display ${plotfile} &
 
-#================================================================#
-
-# # RDMA read/write xput plots for various data transfer modes
-# # (changing number of scatter-gather pieces per payload)
-# vary=0
-# # for concur in 1 4 16 64; do   for msgsize in 64 128 256 512 1024 2048 4096; do        # (runs 01-04-23-40 and earlier)
-# # for concur in 128; do           for msgsize in 64 128 256 512 720 1024 2048; do         # (run: 01-08-23-39) 
-# for concur in 128; do           for msgsize in 1440; do                                 # (run: 01-09-17-22) 
-#         echo "Running xput with $msgsize B msg size for window sizes $concur"; 
-#         datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
-#         if [[ $gen ]]; then
-#             bash run.sh -o="-y -c ${concur} -m ${msgsize} -o ${datafile}"
-#         elif [ ! -f $datafile ]; then
-#             echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#             exit 1
-#         fi
-
-#         plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-#         python ../tools/plot.py -d ${datafile} \
-#             -xc "sg pieces" -xl "num sg pieces"   \
-#             -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
-#             -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
-#             -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
-#             -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
-#             --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-#             -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-#         display ${plotfile} &
-#     done
-# done
-
-
-#================================================================#
-
-# # RDMA read/write xput plots for various data transfer modes, ALONG WITH cpu usage (cq poll time)
-# # (changing number of scatter-gather pieces per payload)
-
-# # # Cpu poll time as we increase window size for various message sizes
-# # # This one is to illustrate CPU poll time as a potential indicator of CPU efficiency...
-# vary=0
-# for msgsize in 64 256 512 1024 2048; 
-# do 
-#     echo "Running xput with $msgsize B msg size for various window sizes"; 
-#     datafile=${RUNDIR}/xput_pt_msgsize_${msgsize}
-#     if [[ $gen ]]; then
-#         bash run.sh -o="--xput -c ${vary} -m ${msgsize} -o ${datafile}"
-#     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#         exit 1
-#     fi
-#     files="$files -d ${datafile} -l ${msgsize}B"
-# done
-
-# plotfile=${PLOTDIR}/write_xput_ops_${runid}.${PLOTEXT}
-# python ../tools/plot.py $files                          \
-#     -xc "window size" -xl "outstanding requests"        \
-#     -yc "write_ops" -yl "million ops/sec"  --ymul 1e-6  \
-#     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
+# plotfile=${PLOTDIR}/read_xput_${runid}.png
+# python ../tools/plot.py $files          \
+#     -xc "msg size" -xl "msg size (B)"   \
+#     -yc "read_gbps" -yl "Goodput (gbps)"    \
+#     -o ${plotfile} -of png -fs 11 --ltitle "window size"
 # display ${plotfile} &
-
-# plotfile=${PLOTDIR}/write_cpu_pt_${runid}.${PLOTEXT}
-# python ../tools/plot.py $files                          \
-#     -xc "window size" -xl "outstanding requests"        \
-#     -yc "write_pp" -yl "CQ Poll Time %"                 \
-#     -o ${plotfile} -of ${PLOTEXT} -fs 11 --ltitle "payload size" 
-# display ${plotfile} &
-
-# # now getting xput for various data transfer modes alsong with cpu usage.
-# runs: 01-11-03-06, 01-12-18-34 (bf enabled), 01-28-14-41 (fixed a cpu copy bug), 
-# export MLX5_SHUT_UP_BF=1        # disabling blueflame (runs >= 01-12-18-34)
-# # for concur in 128; do       for msgsize in 64 512 1024; do
-# for concur in 128; do       for msgsize in 32 64 128 256 512 1024; do     # 02-08-13-17 
-#     echo "Running xput with $msgsize B msg size for window sizes $concur"; 
-#     datafile=${RUNDIR}/xputv2_msgsize_${msgsize}_window_${concur}
-#     if [[ $gen ]]; then
-#         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${datafile}"
-#     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#         exit 1
-#     fi
-
-#     plotfile=${PLOTDIR}/sg_xput_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-#     python ../tools/plot.py -d ${datafile} \
-#         -xc "sg pieces" -xl "num sg pieces"   \
-#         -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
-#         -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
-#         -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
-#         -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
-#         --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-#     display ${plotfile} &
-
-#     plotfile=${PLOTDIR}/sg_cput_pt_${msgsize}B_${concur}R_${runid}.${PLOTEXT}
-#     python ../tools/plot.py -d ${datafile} \
-#         -xc "sg pieces" -xl "num sg pieces"   \
-#         -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
-#         -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
-#         -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
-#         -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
-#         -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Concurrency: ${concur}" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-#     display ${plotfile} &
-#     done
-# done
-
-# # Custom plots to observe breakwdown of costs of cpu copy vs traversal
-# msgsize=64
-# concur=128
-# plotfile=sg_xput_${msgsize}B_${concur}R.${PLOTEXT}
-# python ../tools/plot.py \
-#     -xc  "sg pieces" -xl "num sg pieces"   \
-#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "base_ops" -l "Zero Copy" -ls dashed  \
-#     -dyc data/02-08-13-17/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_ops" -l "CPU Traversal" -ls solid  \
-#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_ops" -l "CPU Copy" -ls solid  \
-#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "nic_gather_ops" -l "NIC gather" -ls solid  \
-#     --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B" \
-#     -o ${plotfile} -of ${PLOTEXT}  -fs 9 
-# display ${plotfile} &
-
-# msgsize=64
-# plotfile=sg_cpu_${msgsize}B_${concur}R.${PLOTEXT}
-# python ../tools/plot.py \
-#     -xc  "sg pieces" -xl "num sg pieces"   \
-#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "base_pp" -l "Zero Copy" -ls dashed  \
-#     -dyc data/02-08-13-17/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_pp" -l "CPU Traversal" -ls solid  \
-#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "cpu_gather_pp" -l "CPU Copy" -ls solid  \
-#     -dyc data/01-28-14-41/xputv2_msgsize_${msgsize}_window_${concur} "nic_gather_pp" -l "NIC gather" -ls solid  \
-#     -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B" \
-#     -o ${plotfile} -of ${PLOTEXT}  -fs 12
-# display ${plotfile} &
-
-
-
-#================================================================#
-
-# RDMA SG Xput and CPU usage with/without BlueFlame support
-# runs: 01-13-12-08, 01-13-16-17
-
-# for concur in 128; do       for msgsize in 64 256 512 720 1024 1440; do
-#     # run without blueflame
-#     echo "Running xput with $msgsize B msg size for window sizes $concur (BLUEFLAME disabled)";
-#     export MLX5_SHUT_UP_BF=0      
-#     data_nobf=${RUNDIR}/xputv2_${msgsize}B_without_bf
-#     if [[ $gen ]]; then
-#         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${data_nobf}"
-#     elif [ ! -f $data_nobf ]; then
-#         echo "ERROR! Datafile $data_nobf not found for this run. Try --gen or another runid."
-#         exit 1
-#     fi
-    
-#     # run with blueflame
-#     echo "Running xput with $msgsize B msg size for window sizes $concur (BLUEFLAME enabled)";
-#     export MLX5_SHUT_UP_BF=1      
-#     data_bf=${RUNDIR}/xputv2_${msgsize}B_with_bf        # NOTE: with_bf means "with bf shut up" i.e., disabled
-#     if [[ $gen ]]; then
-#         bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -o ${data_bf}"
-#     elif [ ! -f $data_bf ]; then
-#         echo "ERROR! Datafile $data_bf not found for this run. Try --gen or another runid."
-#         exit 1
-#     fi
-
-#     # We are interested in scatter-gather xput and cpu usage
-#     plotfile=${PLOTDIR}/sg_xput_${msgsize}B_bf_${runid}.${PLOTEXT}
-#     python ../tools/plot.py \
-#         -xc "sg pieces" -xl "num sg pieces" \
-#         -dyc ${data_nobf} "base_ops" -l "no gather (baseline)" -ls dashed  \
-#         -dyc ${data_nobf} "nic_gather_ops" -l "MMIO" -ls solid  \
-#         -dyc ${data_bf} "nic_gather_ops" -l "Doorbell" -ls solid  \
-#         --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, Reqs in flight: ${concur}" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 11
-#     display ${plotfile} &
-
-#     plotfile=${PLOTDIR}/sg_cpu_${msgsize}B_bf_${runid}.${PLOTEXT}
-#     python ../tools/plot.py \
-#         -xc "sg pieces" -xl "num sg pieces" \
-#         -dyc ${data_nobf} "base_pp" -l "no gather (baseline)" -ls dashed  \
-#         -dyc ${data_nobf} "nic_gather_pp" -l "MMIO" -ls solid  \
-#         -dyc ${data_bf} "nic_gather_pp" -l "Doorbell" -ls solid  \
-#         -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, Reqs in flight: ${concur}" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 11
-#     display ${plotfile} &
-# done
-# done
-
-# # put all sizes in one plot to compare
-# # for msgsize in 64 256 512 1024; do
-# for msgsize in 1440; do
-#     xputplots="${xputplots} -dyc ${RUNDIR}/xputv2_${msgsize}B_with_bf nic_gather_ops -l ${msgsize}B(doorbell)  -ls solid"
-#     xputplots="${xputplots} -dyc ${RUNDIR}/xputv2_${msgsize}B_without_bf nic_gather_ops -l ${msgsize}B(mmio)   -ls dashed"
-#     cpuplots="${cpuplots} -dyc ${RUNDIR}/xputv2_${msgsize}B_with_bf nic_gather_pp -l ${msgsize}B(doorbell)  -ls solid"
-#     cpuplots="${cpuplots} -dyc ${RUNDIR}/xputv2_${msgsize}B_without_bf nic_gather_pp -l ${msgsize}B(mmio)   -ls dashed"
-# done
-
-# plotfile=${PLOTDIR}/sg_xput_across_sizes_${runid}.${PLOTEXT}    # xput
-# python ../tools/plot.py ${xputplots}    \
-#     -xc "sg pieces" -xl "num sg pieces" --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Payload size" \
-#     -o ${plotfile} -of ${PLOTEXT}  -fs 10
-# display ${plotfile} &
-# plotfile=${PLOTDIR}/sg_cpu_across_sizes_${runid}.${PLOTEXT}     # cpu
-# python ../tools/plot.py ${cpuplots}    \
-#     -xc "sg pieces" -xl "num sg pieces" -yl "CQ Poll Time %" --ltitle "Payload size" \
-#     -o ${plotfile} -of ${PLOTEXT}  -fs 10
-# display ${plotfile} &
-
-#================================================================#
-
-# # # RTT numbers with/without blueflame to see difference in latencies
-# data_nobf=${RUNDIR}/rtts_nobf
-# data_bf=${RUNDIR}/rtts_bf
-# plotfile=${PLOTDIR}/rtt_bf_${runid}.${PLOTEXT}
-# if [[ $gen ]]; then
-#     export MLX5_SHUT_UP_BF=1  
-#     bash run.sh -o="--rtt -o ${data_nobf}"
-#     export MLX5_SHUT_UP_BF=0
-#     bash run.sh -o="--rtt -o ${data_bf}"
-# elif [ ! -f $data_bf ] || [ ! -f $data_nobf ]; then
-#     echo "ERROR! Datafiles $data_nobf or $data_bf not found for this run. Try --gen or another runid."
-#     exit 1
-# fi
-# python ../tools/plot.py \
-#     -xc "msg size" -xl "msg size (B)" -yl "RTT (micro-sec)" \
-#     -dyc ${data_nobf} "write" -l "write (doorbell)" -ls solid \
-#     -dyc ${data_bf} "write" -l "write (mmio)"  -ls dashed \
-#     -dyc ${data_nobf} "read" -l "read (doorbell)" -ls solid \
-#     -dyc ${data_bf} "read" -l "read (mmio)"  -ls dashed \
-#     -o ${plotfile} -of ${PLOTEXT} --ltitle "Operation" -fs 11
-# display ${plotfile} &
-
-#================================================================#
-
-# # RDMA SG Xput and CPU usage with varying number of queue pairs
-# # runs: 01-15-15-20
-
-# export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
-# for concur in 128; do   for msgsize in 64 256 512 720 1024 1440; do
-#     xputplotsq=
-#     cpuplotsq=
-#     for qps in 1 2 4 8; do
-#         datafile=${RUNDIR}/sg_xput_qps_${qps}_${msgsize}B_${concur}w
-#         if [[ $gen ]]; then
-#             bash run.sh -o="--xputv2 -c ${concur} -m ${msgsize} -q ${qps} -o ${datafile}" -so="-q ${qps}"
-#         elif [ ! -f $datafile ]; then
-#             echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#             exit 1
-#         fi
-
-#         # Plots per QP
-#         plotfile=${PLOTDIR}/sg_xput_${qps}qps_${msgsize}B_${concur}R.${PLOTEXT}
-#         python ../tools/plot.py -d ${datafile} \
-#             -xc "sg pieces" -xl "num sg pieces"   \
-#             -yc "base_ops" -l "no gather (baseline)" -ls dashed  \
-#             -yc "cpu_gather_ops" -l "CPU gather" -ls solid  \
-#             -yc "nic_gather_ops" -l "NIC gather" -ls solid  \
-#             -yc "piece_by_piece_ops" -l "Piece by Piece" -ls dashed  \
-#             --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize}B, QPs: ${qps}" \
-#             -o ${plotfile} -of ${PLOTEXT}  -fs 10
-#         display ${plotfile} &
-
-#         plotfile=${PLOTDIR}/sg_cpu_${qps}qps_${msgsize}B_${concur}R.${PLOTEXT}
-#         python ../tools/plot.py -d ${datafile} \
-#             -xc "sg pieces" -xl "num sg pieces"   \
-#             -yc "base_pp" -l "no gather (baseline)" -ls dashed  \
-#             -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
-#             -yc "nic_gather_pp" -l "NIC gather" -ls solid  \
-#             -yc "piece_by_piece_pp" -l "Piece by Piece" -ls dashed  \
-#             -yl "CQ Poll Time %" --ltitle "Size: ${msgsize}B, QPs: ${qps}" \
-#             -o ${plotfile} -of ${PLOTEXT}  -fs 10
-#         display ${plotfile} &
-
-#         xputplotsq="${xputplotsq} -dyc ${datafile} nic_gather_ops -l sg(qps:${qps})  -ls solid"
-#         xputplotsq="${xputplotsq} -dyc ${datafile} base_ops -l base(qps:${qps})  -ls dashed"
-#         cpuplotsq="${cpuplotsq} -dyc ${datafile} nic_gather_pp -l sg(qps:${qps})  -ls solid"
-#         cpuplotsq="${cpuplotsq} -dyc ${datafile} base_pp -l base(qps:${qps})  -ls dashed"
-#     done
-
-#     # Plots across QPs
-#     plotfile=${PLOTDIR}/sg_xput_across_qps_${msgsize}B_${concur}R.${PLOTEXT}    # xput
-#     python ../tools/plot.py ${xputplotsq}    \
-#         -xc "sg pieces" -xl "num sg pieces" --ymul 1e-6 -yl "Xput (Million ops)" --ltitle "Size: ${msgsize} B" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 10
-#     display ${plotfile} &
-#     plotfile=${PLOTDIR}/sg_cpu_across_qps_${msgsize}B_${concur}R.${PLOTEXT}     # cpu
-#     python ../tools/plot.py ${cpuplotsq}    \
-#         -xc "sg pieces" -xl "num sg pieces" -yl "CQ Poll Time %" --ltitle "Size: ${msgsize} B" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 10
-#     display ${plotfile} &
-# done; done
-
-
-#================================================================#
-
-# # # Copy overhead for different message sizes (finer granularity)
-# # # 
-
-# vary=0
-# export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
-# for concur in 128; do
-#     datafile=${RUNDIR}/copy_xput_by_msgsize_${concur}w
-#     if [[ $gen ]]; then
-#         bash run.sh -o="--xputv2 -c ${concur} -m ${vary} --pieces 1 -o ${datafile}"
-#     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#         exit 1
-#     fi
-
-#     # Plots per QP
-#     plotfile=${PLOTDIR}/copy_xput_by_msgsize_${concur}w.${PLOTEXT}
-#     python ../tools/plot.py -d ${datafile} \
-#         -xc "msg size" -xl "message size (bytes)" \
-#         -yc "base_ops" -l "zero copy" -ls dashed  \
-#         -yc "cpu_gather_ops" -l "bounce buffer" -ls solid  \
-#         --ymul 1e-6 -yl "Xput (Million ops)"\
-#         -o ${plotfile} -of ${PLOTEXT} -fs 10
-#     display ${plotfile} &
-
-#     plotfile=${PLOTDIR}/copy_xput_bps_by_msgsize_${concur}w.${PLOTEXT}
-#     python ../tools/plot.py -d ${datafile} \
-#         -xc "msg size" -xl "message size (bytes)"   \
-#         -yc "base_gbps" -l "zero copy" -ls dashed  \
-#         -yc "cpu_gather_gpbs" -l "bounce buffer" -ls solid  \
-#         -yl "Xput (Gbps)" \
-#         -o ${plotfile} -of ${PLOTEXT} -fs 11
-#     display ${plotfile} &
-
-#     plotfile=${PLOTDIR}/copy_cpu_by_msgsize_${concur}w.${PLOTEXT}
-#     python ../tools/plot.py -d ${datafile} \
-#         -xc "msg size" -xl "message size (bytes)"   \
-#         -yc "base_pp" -l "zero copy" -ls dashed  \
-#         -yc "cpu_gather_pp" -l "CPU gather" -ls solid  \
-#         -yl "CQ Poll Time %" \
-#         -o ${plotfile} -of ${PLOTEXT} -fs 11
-#     display ${plotfile} &
-# done
-
-#================================================================#
-
-# # # RTT numbers for copy overhead (expecting to see cycles spent on copying data)
-# # # 
-# vary=0
-# export MLX5_SHUT_UP_BF=1        # Doorbell to be default from now on.
-# datafile=${RUNDIR}/copy_rtt_by_msgsize
-# if [[ $gen ]]; then
-#     bash run.sh -o="--rttv2 -m ${vary} --pieces 1 -o ${datafile}"
-# elif [ ! -f $datafile ]; then
-#     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#     exit 1
-# fi
-
-# # Plots per QP
-# plotfile=${PLOTDIR}/copy_rtt_by_msgsize.${PLOTEXT}
-# python ../tools/plot.py -d ${datafile} \
-#     -xc "msg size" -xl "message size (bytes)" \
-#     -yc "base_rtt" -l "zero copy" -ls dashed  \
-#     -yc "cpu_gather_rtt" -l "bounce buffer" -ls solid  \
-#     -yl "RTT (micro-sec)"\
-#     -o ${plotfile} -of ${PLOTEXT} -fs 10
-# display ${plotfile} &
-
-#================================================================#
-
-# # # RTT numbers for various data transfer modes (I never looked at RTTs before)
-# # # runs: 01-28-15-49
-# vary=0
-# # for msgsize in 64 128 512 1024 1440; do       # run 01-28-15-49
-# for msgsize in 4 8 16 32 64; do                 # run 01-28-17-55
-#     datafile=${RUNDIR}/sg_rtts_${msgsize}B
-#     plotfile=${PLOTDIR}/sg_rtts_${msgsize}B.${PLOTEXT}
-#     if [[ $gen ]]; then
-#         export MLX5_SHUT_UP_BF=1  
-#         bash run.sh -o="--rttv2 -m ${msgsize} -o ${datafile}"
-#     elif [ ! -f $datafile ]; then
-#         echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#         exit 1
-#     fi
-#     python ../tools/plot.py -d ${datafile} \
-#         -xc "sg pieces" -xl "num sg pieces"   \
-#         -yc "base_rtt" -l "no gather (baseline)" -ls dashed  \
-#         -yc "cpu_gather_rtt" -l "CPU gather" -ls solid  \
-#         -yc "nic_gather_rtt" -l "NIC gather" -ls solid  \
-#         -yl "RTT (micro-sec)" --ltitle "Operation" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 10
-#     display ${plotfile} &
-# done
-
-#================================================================#
-
-# # # Vary window size for various number of pieces, to get max concurrency 
-# # # that is supported under current limitations
-# # # Runs: 01-27-14-22, 
-
-# vary=0
-# for msgsize in 512; do
-#     plots=
-#     for pieces in 8 16; do          # only these are not CPU limited
-#         datafile=${RUNDIR}/sg_xput_by_concur_${msgsize}B_${pieces}pieces
-#         if [[ $gen ]]; then
-#             export MLX5_SHUT_UP_BF=1  
-#             bash run.sh -o="--xputv2 -m ${msgsize} --pieces ${pieces} -c ${vary} -o ${datafile}"
-#         elif [ ! -f $datafile ]; then
-#             echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#             exit 1
-#         fi
-#         plots="${plots} -d ${datafile} -l ${pieces}"
-#     done
-#     plotfile=${PLOTDIR}/sg_xput_by_concur_${msgsize}B
-#     python ../tools/plot.py ${plots}  \
-#         -xc "window size" -xl "Window size"   \
-#         -yc "nic_gather_ops" -yl "Xput (Mpps)" --ltitle "SG pieces" \
-#         -o ${plotfile} -of ${PLOTEXT}  -fs 11
-#     display ${plotfile} &
-# done
-
-#================================================================#
-
-# # RTT numbers for various data transfer modes (I never looked at RTTs before)
-# # runs: 
-# vary=0
-# msgsize=64
-# datafile=${RUNDIR}/odp_rtts_${msgsize}B
-# plotfile=${PLOTDIR}/odp_rtts_${msgsize}B.${PLOTEXT}
-# if [[ $gen ]]; then
-#     export MLX5_SHUT_UP_BF=1  
-#     bash run.sh -o="--rtt -m ${msgsize} --odp ${vary} -o ${datafile}"
-# elif [ ! -f $datafile ]; then
-#     echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-#     exit 1
-# fi
-# python ../tools/plot.py -d ${datafile} \
-#     -xc "odp buf size" -xl "ODP Buffer Size (pages)"   \
-#     -yc "write" -l "Remote Write" -ls solid  \
-#     -yc "read" -l "Remote Read" -ls dashed  \
-#     -yl "RTT (micro-sec)" --ltitle "Operation" \
-#     -o ${plotfile} -of ${PLOTEXT}  -fs 10 --xlog --ylog
-# display ${plotfile} &
-
-#================================================================#
-
-# # RDMA ODP read/write xput plots 
-# # (changing payload size for various window sizes)
-# # (relevant runs: )
-vary=0
-concur=64
-msgsize=64
-datafile=${RUNDIR}/odp_xput_${msgsize}B_${concur}
-plotfile=${PLOTDIR}/odp_xput_${msgsize}B_${concur}.${PLOTEXT}
-if [[ $gen ]]; then
-    bash run.sh -o="--xput -c ${concur} -m ${msgsize} --odp ${vary} -o ${datafile}"
-elif [ ! -f $datafile ]; then
-    echo "ERROR! Datafile $datafile not found for this run. Try --gen or another runid."
-    exit 1
-fi
-
-python ../tools/plot.py -d ${datafile} \
-    -xc "odp buf size" -xl "ODP Buffer Size (pages)"   \
-    -yc "write_ops" -l "Remote Write" -ls solid     \
-    -yl "Xput (Mops)" --ltitle "Operation"      \
-    -o ${plotfile} -of ${PLOTEXT}  -fs 10 --xlog  --ymul 1e-6 
-display ${plotfile} &
-

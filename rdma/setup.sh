@@ -7,10 +7,10 @@
 # Metadata
 CLIENT_HOST=yak-00.sysnet.ucsd.edu
 CLIENT_INTF=enp4s0
-CLIENT_IP=10.0.0.1
+CLIENT_IP=192.168.1.12
 SERVER_HOST=yak-01.sysnet.ucsd.edu
 SERVER_INTF=enp129s0
-SERVER_IP=10.0.0.2
+SERVER_IP=192.168.1.13
 
 # Parse command line arguments
 for i in "$@"
@@ -52,25 +52,28 @@ then
     sudo pkill init  # terminate setup and continue
 fi
 
+
+##Configure Openflow rules on Sw100,  requires password file
+
 # Make sure the switch is not configured with custom openflow rules
-echo "Checking for openflow rules on the switch"
-pwd=$(cat switch.password)      # Tip: Use (chmod) 600 access for this file
-rules=$(sshpass -p "$pwd" ssh sw100 cli -h '"enable" "show openflow flows"')
-num_rules=$(echo "$rules" | grep "in_port" | wc -l)
-if [[ $num_rules -ne 0 ]] && [[ $num_rules -ne 5 ]];
-then 
-    # expecting zero or two rules from Stew. If not, something has changed on his side.
-    echo "ERROR! expecting only 5 custom rules but found $num_rules; double-check to be sure.";
-    echo "$rules"
-    exit 1
-elif [[ $num_rules -eq 5  ]];
-then
-    # five rules as expected; remove.
-    echo "Found 5 openflow rules on the switch; deleting them"
-    sshpass -p "$pwd" ssh sw100 cli -h '"enable" "configure terminal" "openflow del-flows"'
-else 
-    echo "no custom openflow rules on switch; we're good!"
-fi
+# echo "Checking for openflow rules on the switch"
+# pwd=$(cat switch.password)      # Tip: Use (chmod) 600 access for this file
+# rules=$(sshpass -p "$pwd" ssh sw100 cli -h '"enable" "show openflow flows"')
+# num_rules=$(echo "$rules" | grep "in_port" | wc -l)
+# if [[ $num_rules -ne 0 ]] && [[ $num_rules -ne 5 ]];
+# then 
+#     # expecting zero or two rules from Stew. If not, something has changed on his side.
+#     echo "ERROR! expecting only 5 custom rules but found $num_rules; double-check to be sure.";
+#     echo "$rules"
+#     exit 1
+# elif [[ $num_rules -eq 5  ]];
+# then
+#     # five rules as expected; remove.
+#     echo "Found 5 openflow rules on the switch; deleting them"
+#     sshpass -p "$pwd" ssh sw100 cli -h '"enable" "configure terminal" "openflow del-flows"'
+# else 
+#     echo "no custom openflow rules on switch; we're good!"
+# fi
 
 
 # Setup interfaces
@@ -78,7 +81,7 @@ function setup_intf {
     iface=$1
     ipaddr=$2
     sudo ip link set $iface up                          #set the link up
-    sudo ifconfig $iface $ipaddr netmask 255.255.0.0    #turn the interface on and configure ip
+    sudo ifconfig $iface $ipaddr netmask 255.255.255.0    #turn the interface on and configure ip
 }
 
 # NOTE: May wanna enable passwordless sudo for ip, ifconfig, etc on all hosts

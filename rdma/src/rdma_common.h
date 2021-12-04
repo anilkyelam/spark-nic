@@ -10,6 +10,16 @@
 #ifndef RDMA_COMMON_H
 #define RDMA_COMMON_H
 
+//for thread pinning
+#define _GNU_SOURCE
+#include <sched.h> // cpu_set_t, CPU_SET
+#include <dlfcn.h>
+#include <errno.h> // EINVAL
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h> // sysconf
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +35,7 @@
 
 #include <rdma/rdma_cma.h>
 #include <infiniband/verbs.h>
+
 
 /* Error Macro*/
 #define rdma_error(msg, args...) do {\
@@ -64,6 +75,7 @@
 /* MAX outstnading READ/ATOMIC ops 
  * (limited by "max_qp_init_rd_atom" and "max_qp_rd_atom" device attrs) */
 #define MAX_RD_AT_IN_FLIGHT (16)
+//#define MAX_RD_AT_IN_FLIGHT (64)
 
 /* MAX memory registrations (limited by device resources, found empiirically for our NIC) */
 #define MAX_MR (16000)
@@ -72,10 +84,7 @@
 #define DEFAULT_RDMA_PORT (20886)
 
 /* Self-imposed limit of total queue pairs */
-#define MAX_QPS 10
-
-/* Arbitrary limit on ODP buffer size to perform random accesses from the NIC */
-#define MAX_ODP_SIZE (4ULL*1024*1024*1024)		// 64 GB
+#define MAX_QPS 32
 
 /* Bit field for work request id (NOT Portable) */
 union work_req_id {
@@ -146,7 +155,7 @@ void rdma_buffer_free(struct ibv_mr *mr);
  */
 struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd, 
 		void *addr, 
-		size_t length, 
+		uint32_t length, 
 		enum ibv_access_flags permission);
 /* Deregisters a previously register memory 
  * @mr: Memory region to deregister 
@@ -165,5 +174,9 @@ int process_work_completion_events(struct ibv_comp_channel *comp_channel,
 
 /* prints some details from the cm id */
 void show_rdma_cmid(struct rdma_cm_id *id);
+
+
+int stick_this_thread_to_core(int core_id);
+
 
 #endif /* RDMA_COMMON_H */

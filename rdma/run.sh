@@ -7,10 +7,11 @@
 # Metadata
 CLIENT_HOST=yak-00.sysnet.ucsd.edu
 CLIENT_INTF=enp4s0
-CLIENT_IP=10.0.0.1
+CLIENT_IP=192.168.1.12
 SERVER_HOST=yak-01.sysnet.ucsd.edu
 SERVER_INTF=enp129s0
-SERVER_IP=10.0.0.2
+SERVER_IP=192.168.1.13
+
 
 # Parse command line arguments
 for i in "$@"
@@ -68,6 +69,4 @@ sleep 1
 
 # Run client on the client host 
 echo "Running client with options: $OPTS"
-# sudo perf stat -e task-clock,cycles,instructions,cache-references,cache-misses 
-# taskset 0x4 ${DIR}/bin/rdma_client -a ${SERVER_IP} -p ${SERVER_PORT} ${OPTS}
-numactl --physcpubind=2 --membind=0 ${DIR}/bin/rdma_client -a ${SERVER_IP} -p ${SERVER_PORT} ${OPTS}
+taskset 0x4 ${DIR}/bin/rdma_client -a ${SERVER_IP} -p ${SERVER_PORT} ${OPTS}

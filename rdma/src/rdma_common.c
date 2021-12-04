@@ -59,7 +59,7 @@ struct ibv_mr* rdma_buffer_alloc(struct ibv_pd *pd, uint32_t size,
 }
 
 struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd, 
-		void *addr, size_t length, 
+		void *addr, uint32_t length, 
 		enum ibv_access_flags permission)
 {
 	struct ibv_mr *mr = NULL;
@@ -208,4 +208,20 @@ int get_addr(char *dst, struct sockaddr *addr)
 	freeaddrinfo(res);
 	return ret;
 }
+
+
+
+int stick_this_thread_to_core(int core_id) {
+   int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+   if (core_id < 0 || core_id >= num_cores)
+      return EINVAL;
+
+   cpu_set_t cpuset;
+   CPU_ZERO(&cpuset);
+   CPU_SET(core_id, &cpuset);
+
+   pthread_t current_thread = pthread_self();    
+   return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+}
+
 

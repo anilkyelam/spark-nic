@@ -8,12 +8,6 @@
 #include <sys/time.h>
 #include <assert.h>
 
-#define MOPS_TO_RTT(x)  (1e6 / x)
-#define CACHE_ALIGNMENT 0xFF
-#define PAGE_ALIGNMENT  0xFFF
-#define PAGE_SIZE       (PAGE_ALIGNMENT+1)
-#define UNUSED_VALUE    -1      
-
 /* These are basic RDMA resources */
 /* These are RDMA connection related resources */
 static struct ibv_context **devices;
@@ -36,6 +30,22 @@ static struct ibv_recv_wr server_recv_wr, *bad_server_recv_wr = NULL;
 static struct ibv_sge client_send_sge, server_recv_sge;
 /* Source and Destination buffers, where RDMA operations source and sink */
 static char *src = NULL, *dst = NULL; 
+
+static int finished_running_xput=0;
+#define MAX_THREADS 16
+#define MULTI_CQ
+
+typedef struct {
+    double err_code;
+    double xput_ops;
+    double xput_bps;
+    double cq_poll_time_percent;        // in cpu cycles
+    double cq_poll_count;
+    double cq_empty_count;
+} result_t;
+
+result_t thread_results[MAX_THREADS];
+static struct ibv_cq *client_cq_threads[MAX_THREADS];
 
 
 /* Rdtsc blocks for time measurements */
@@ -95,6 +105,105 @@ unsigned long rand_xorshf96(void) {          //period 2^96-1
     y = z;
     z = t ^ x ^ y;
     return z;
+}
+
+static int client_setup_shared_resources_threaded() {
+    int ret = -1, i;
+    /* Get RDMA devices */
+    devices = rdma_get_devices(&ret);
+    if (ret == 0) {
+        rdma_error("No RDMA devices found\n");
+        return -ENODEV;
+    }
+    printf("%d devices found, using the first one: %s\n", ret, devices[0]->device->name);
+    for(i = 0; i < ret; i++)    debug("Device %d: %s\n", i+1, devices[i]->device->name);
+
+    /* Create shared resources for all conections per device i.e., cq, pd, etc */
+    /* Protection Domain (PD) is similar to a "process abstraction" 
+     * in the operating system. All resources are tied to a particular PD. 
+     * And accessing recourses across PD will result in a protection fault.
+     */
+    pd = ibv_alloc_pd(devices[0]);
+    if (!pd) {
+        rdma_error("Failed to alloc pd, errno: %d \n", -errno);
+        return -errno;
+    }
+    debug("pd allocated at %p \n", pd);
+
+    /* Now we need a completion channel, were the I/O completion 
+     * notifications are sent. Remember, this is different from connection 
+     * management (CM) event notifications. 
+     * A completion channel is also tied to an RDMA device
+     */
+    io_completion_channel = ibv_create_comp_channel(devices[0]);
+    if (!io_completion_channel) {
+        rdma_error("Failed to create IO completion event channel, errno: %d\n",
+                   -errno);
+        return -errno;
+    }
+    debug("completion event channel created at : %p \n", io_completion_channel);
+
+    ret = ibv_query_device(devices[0], &dev_attr);    
+    if (ret) {
+        rdma_error("Failed to get device info, errno: %d\n", -errno);
+        return -errno;
+    }
+    printf("got device info. max qpe: %d, sge: %d, cqe: %d, max rd/at qp depth/outstanding: %d/%d max mr size: %lu\n", 
+        dev_attr.max_qp_wr, dev_attr.max_sge, dev_attr.max_cqe, dev_attr.max_qp_init_rd_atom, dev_attr.max_qp_rd_atom, 
+        dev_attr.max_mr_size);
+
+    /* Now we create a completion queue (CQ) where actual I/O 
+     * completion metadata is placed. The metadata is packed into a structure 
+     * called struct ibv_wc (wc = work completion). ibv_wc has detailed 
+     * information about the work completion. An I/O request in RDMA world 
+     * is called "work" ;) 
+     */
+    client_cq = ibv_create_cq(devices[0] /* which device*/, 
+        CQ_CAPACITY             /* maximum device capacity*/, 
+        NULL                    /* user context, not used here */,
+        io_completion_channel   /* which IO completion channel */, 
+        0                       /* signaling vector, not used here*/);
+    if (!client_cq) {
+        rdma_error("Failed to create CQ, errno: %d \n", -errno);
+        return -errno;
+    }
+    debug("CQ created at %p with %d elements \n", client_cq, client_cq->cqe);
+    ret = ibv_req_notify_cq(client_cq, 0);
+    if (ret) {
+        rdma_error("Failed to request notifications, errno: %d\n", -errno);
+        return -errno;
+    }
+    
+    /*  Open a channel used to report asynchronous communication event */
+    cm_event_channel = rdma_create_event_channel();
+    if (!cm_event_channel) {
+        rdma_error("Creating cm event channel failed, errno: %d \n", -errno);
+        return -errno;
+    }
+    debug("RDMA CM event channel is created at : %p \n", cm_event_channel);
+
+    printf("making thread completion queues as well\n");
+    for(int i=0;i<MAX_THREADS;i++){
+        client_cq_threads[i] = ibv_create_cq(devices[0] /* which device*/, 
+            CQ_CAPACITY             /* maximum device capacity*/, 
+            NULL                    /* user context, not used here */,
+            io_completion_channel   /* which IO completion channel */, 
+            0                       /* signaling vector, not used here*/);
+        if (!client_cq_threads[i]) {
+            rdma_error("Failed to create CQ, errno: %d \n", -errno);
+            return -errno;
+        }
+        debug("CQ created at %p with %d elements \n", client_cq_threads[i], client_cq_threads[i]->cqe);
+        ret = ibv_req_notify_cq(client_cq_threads[i], 0);
+        if (ret) {
+            rdma_error("Failed to request notifications, errno: %d\n", -errno);
+            return -errno;
+        }
+
+    }
+
+    return ret;
+
 }
 
 /* This function prepares client side shared resources for all connections */
@@ -173,6 +282,27 @@ static int client_setup_shared_resources()
         return -errno;
     }
     debug("RDMA CM event channel is created at : %p \n", cm_event_channel);
+
+    printf("making thread completion queues as well\n");
+    for(int i=0;i<MAX_THREADS;i++){
+        client_cq_threads[i] = ibv_create_cq(devices[0] /* which device*/, 
+            CQ_CAPACITY             /* maximum device capacity*/, 
+            NULL                    /* user context, not used here */,
+            io_completion_channel   /* which IO completion channel */, 
+            0                       /* signaling vector, not used here*/);
+        if (!client_cq_threads[i]) {
+            rdma_error("Failed to create CQ, errno: %d \n", -errno);
+            return -errno;
+        }
+        debug("CQ created at %p with %d elements \n", client_cq_threads[i], client_cq_threads[i]->cqe);
+        ret = ibv_req_notify_cq(client_cq_threads[i], 0);
+        if (ret) {
+            rdma_error("Failed to request notifications, errno: %d\n", -errno);
+            return -errno;
+        }
+
+    }
+
     return ret;
 }
 
@@ -250,9 +380,15 @@ static int client_prepare_connection(struct sockaddr_in *s_addr, int qp_num, int
     qp_init_attr.cap.max_send_sge = MAX_SGE;    /* Maximum SGE per send posting;*/
     qp_init_attr.cap.max_send_wr = MAX_WR;      /* Maximum send posting capacity; */
     qp_init_attr.qp_type = IBV_QPT_RC;                  /* QP type, RC = Reliable connection */
+
     /* We use same completion queue, but one can use different queues */
+    #ifdef MULTI_CQ
+    qp_init_attr.recv_cq = client_cq_threads[qp_num]; /* Where should I notify for receive completion operations */
+    qp_init_attr.send_cq = client_cq_threads[qp_num]; /* Where should I notify for send completion operations */
+    #else
     qp_init_attr.recv_cq = client_cq; /* Where should I notify for receive completion operations */
     qp_init_attr.send_cq = client_cq; /* Where should I notify for send completion operations */
+    #endif
     ret = rdma_create_qp(cm_client_qp_id[qp_num], pd, &qp_init_attr);
     if (ret) {
         rdma_error("Failed to create QP, errno: %d \n", -errno);
@@ -344,12 +480,14 @@ static int client_xchange_metadata_with_server(int qp_num, char* buffer, uint32_
                 buffer_size,
                 (IBV_ACCESS_LOCAL_WRITE|
                 IBV_ACCESS_REMOTE_READ|
+                IBV_ACCESS_REMOTE_ATOMIC|
                 IBV_ACCESS_REMOTE_WRITE)) :
             rdma_buffer_register(pd,
                 buffer,
                 strlen(buffer),
                 (IBV_ACCESS_LOCAL_WRITE|
                 IBV_ACCESS_REMOTE_READ|
+                IBV_ACCESS_REMOTE_ATOMIC|
                 IBV_ACCESS_REMOTE_WRITE));;
     if(!client_qp_src_mr[qp_num]){
         rdma_error("Failed to register the first buffer, ret = %d \n", ret);
@@ -424,6 +562,7 @@ static int client_remote_memory_ops(int qp_num)
         strlen(src),
         (IBV_ACCESS_LOCAL_WRITE | 
             IBV_ACCESS_REMOTE_WRITE | 
+            IBV_ACCESS_REMOTE_ATOMIC | 
             IBV_ACCESS_REMOTE_READ));
     if (!client_qp_dst_mr[qp_num]) {
         rdma_error("We failed to create the destination buffer, -ENOMEM\n");
@@ -502,23 +641,165 @@ static int client_remote_memory_ops(int qp_num)
 }
 
 
-typedef struct {
-    double err_code;
-    double xput_ops;
-    double xput_bps;
-    double cq_poll_time_percent;        // in cpu cycles
-    double cq_poll_count;
-    double cq_empty_count;
-} result_t;
 
 /* List of ops that are being instrumented */
-enum rdma_measured_op { RDMA_READ_OP, RDMA_WRITE_OP };
+enum rdma_measured_op { RDMA_READ_OP, RDMA_WRITE_OP, RDMA_CAS_OP };
 enum mem_reg_mode { 
     MR_MODE_PRE_REGISTER,               // Use a pre-registered buffer and use it for all transactions
     MR_MODE_PRE_REGISTER_WITH_ROTATE,   // Use a set of pre-registered buffers (for the same piece of memory) but rotate their usage
     MR_MODE_REGISTER_IN_DATAPTH,        // Register buffers in datapath as necessary
-    MR_MODE_REGISTER_IMPLICIT_ODP,      // Registers whole address space using implicit on-demand paging (CX-5s)
 };
+
+struct xput_thread_args {
+    int thread_id;
+    int core;
+    int num_concur;
+    struct ibv_cq *cq_ptr;
+    int msg_size;
+    enum rdma_measured_op rdma_op;      // rdma op to use i.e., read or write
+    uint64_t start_cycles;
+    struct ibv_mr **mr_buffers;           /* Make sure to deregister these local MRs before exiting */
+    int num_lbuffers;
+};
+
+void * xput_thread(void * args) {
+    struct xput_thread_args * targs = (struct xput_thread_args *)args;
+    //printf("Hello from xput going to core %d\n",targs->core);
+    stick_this_thread_to_core(targs->core);
+
+    int num_concur = targs->num_concur;
+    struct ibv_cq *cq_ptr = targs->cq_ptr;
+    int msg_size = targs->msg_size;
+    enum rdma_measured_op rdma_op = targs->rdma_op;
+    struct ibv_mr **mr_buffers=targs->mr_buffers;           /* Make sure to deregister these local MRs before exiting */
+    int num_lbuffers = targs->num_lbuffers;
+
+    uint64_t start_cycles, end_cycles;
+    start_cycles=targs->start_cycles;
+
+
+    struct ibv_wc* wc;
+    int ret = -1, n, i;
+    uint64_t xstart_cycles, xend_cycles;
+    struct timeval      start, end;
+
+    const uint64_t minimum_duration_secs = 10;  /* number of seconds to run the experiment for at least */
+    const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
+    int stop_posting = 0;
+    uint64_t poll_time = 0, poll_count = 0, idle_count = 0;
+    uint64_t wr_posted = 0, wr_acked = 0;
+    int qp_num = 0;
+    union work_req_id wr_id;
+
+
+    static struct ibv_send_wr local_client_send_wr, *local_bad_client_send_wr;
+    local_client_send_wr = client_send_wr;
+
+    result_t result;
+
+    uint64_t local_server_address = server_qp_metadata_attr[0].address;
+
+    int	buf_offset = 0, slot_num = 0;
+    int buf_num = 0;
+
+    char * buf_ptr;
+
+    gettimeofday (&start, NULL);
+    rdtsc();
+    start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
+
+    wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
+    do {
+        /* Poll the completion queue for the completion event for the earlier write */
+        xrdtsc();
+        do {
+            printf("poll attempt\n");
+            n = ibv_poll_cq(cq_ptr, num_concur, wc);       // get upto num_concur entries
+            printf("polling %d\n",n);
+            //printf("exit poll\n");
+            if (n < 0) {
+                printf("Failed to poll cq for wc due to %d\n", ret);
+                rdma_error("Failed to poll cq for wc due to %d \n", ret);
+                exit(1);
+            }
+            poll_count++;
+            if (n == 0) {
+                idle_count++;
+                if (finished_running_xput) {
+                    //printf("IDLE BREAK FROM FINSIHED RUN %d\n",wr_posted++);
+                    break;
+                }
+            }     
+        } while (n < 1);
+        /* For each completed request */
+        for (i = 0; i < n; i++) {
+            printf("actually received something\n");
+            /* Check that it succeeded */
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                rdma_error("Work completion (WC) has error status: %d, %s at index %ld\n",  
+                    wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+            }
+
+            if (!finished_running_xput) {
+                /* Issue another request that reads/writes from same locations as the completed one */
+                wr_id.val =  wc[i].wr_id;
+                qp_num = wr_id.s.qp_num;
+                slot_num = wr_id.s.window_slot;
+
+                buf_offset = slot_num * msg_size;
+                buf_ptr     = mr_buffers[buf_num]->addr + buf_offset;
+
+                local_client_send_wr.wr_id = wr_id.val;              /* User-assigned id to recognize this WR on completion */
+                local_client_send_wr.wr.rdma.remote_addr = local_server_address + buf_offset;
+                
+                if(rdma_op == RDMA_CAS_OP){
+                    local_client_send_wr.wr.atomic.remote_addr = local_server_address + buf_offset;
+                    local_client_send_wr.wr.atomic.compare_add = 0;
+                    local_client_send_wr.wr.atomic.swap = 0;
+                }
+
+                ret = ibv_post_send(client_qp[qp_num], 
+                        &local_client_send_wr,
+                        &local_bad_client_send_wr);
+                if (ret) {
+                    rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
+                    exit(1);
+                }
+                wr_posted++;
+                buf_num     = (buf_num++) % num_lbuffers;
+            }
+        }
+        wr_acked += n;
+    } while(!finished_running_xput);
+    
+    rdtsc1();
+    end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
+    gettimeofday (&end, NULL);
+    //printf("Done Thread on core %d\n",targs->core);
+    //printf("[Core %d] WRs posted: %lu, WRs acked: %lu\n", targs->core,wr_posted, wr_acked);
+
+    /* Calculate duration. See if RDTSC timer agrees with regular ctime.
+     * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
+     * but rdtsc is low overhead so we can use that from (roughly) keeping track of time while we use ctime 
+     * to calculate numbers */
+    double duration_rdtsc = (end_cycles - start_cycles) / CPU_FREQ;
+    double duration_ctime = (double)((end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) * 1.0e-6);
+    //printf("Duration as measured by RDTSC: %.2lf secs, by ctime: %.2lf secs\n", duration_rdtsc, duration_ctime);
+
+    double goodput_pps = wr_acked / duration_ctime;
+    double goodput_bps = goodput_pps * msg_size * 8;
+    //printf("Goodput = %.2lf Gbps. Sampled for %.2lf seconds\n", goodput_bps / 1e9, duration_ctime);
+    
+    /* Fill in result */
+    result.xput_bps = goodput_bps / 1e9;
+    result.xput_ops = goodput_pps;
+    //printf("XPUT OPS %f\n",result.xput_ops);
+    result.cq_poll_time_percent = poll_time * 100.0 / CPU_FREQ / duration_rdtsc;
+    result.cq_poll_count = poll_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
+    result.cq_empty_count = idle_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
+    thread_results[targs->thread_id]=result;
+
+}
 
 /* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
 /* Returns xput in ops/sec */
@@ -528,8 +809,7 @@ static result_t measure_xput(
     enum rdma_measured_op rdma_op,      // rdma op to use i.e., read or write
     enum mem_reg_mode mr_mode,          // mem reg mode; see comments for each "enum mem_reg_mode" 
     int num_lbuffers,                   // number of pre-registed buffers to rotate between; only valid for MR_MODE_PRE_REGISTER_WITH_ROTATE
-    int num_qps,                        // num of QPs to use
-    long odp_buf_size                   // buffer size to perform random accesses from when demand paging
+    int num_qps                         // num of QPs to use
 ) {
     int ret = -1, n, i;
     struct ibv_wc* wc;
@@ -543,15 +823,16 @@ static result_t measure_xput(
     result_t result;
     union work_req_id wr_id;
     int qp_num = 0;
+
     
     /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
      * is very less; while there is no such limit for WRITES. The connection parameters initiator_depth
      * and responder_resources determine such limit, which are again limited by hardware device 
      * attributes max_qp_rd_atom and max_qp_init_rd_atom. Why is there such a limit?  */
     /* In any case, for now, disallow request for concurrency more than the limit */
-    if (rdma_op == RDMA_READ_OP && num_concur > MAX_RD_AT_IN_FLIGHT) {
-        rdma_error("Device cannot support more than %d outstnading READs (num_concur=%d)\n", 
-            MAX_RD_AT_IN_FLIGHT, num_concur);
+    if ((rdma_op == RDMA_READ_OP || rdma_op == RDMA_CAS_OP) && num_concur > (MAX_RD_AT_IN_FLIGHT * num_qps)) {
+        rdma_error("Device cannot support more than %d outstnading READs (num_concur=%d, qps %d)\n", 
+            MAX_RD_AT_IN_FLIGHT, num_concur,num_qps);
         result.err_code = -EOVERFLOW;
         return result;
     }
@@ -565,39 +846,13 @@ static result_t measure_xput(
 
     /* Allocate client buffers to read/write from (use the same piece of underlying memory) */
     mr_buffers = (struct ibv_mr**) malloc(num_lbuffers * sizeof(struct ibv_mr*));
-    size_t buf_size = num_concur * msg_size;
-
-    void *odp_buffer_raw = NULL, *odp_buffer = NULL;
-    if (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP) {
-        if (odp_buf_size % PAGE_SIZE != 0) {
-            rdma_error("Invalid buf size for odp, must be a multiple of page size 4KB\n");
-            result.err_code = -EINVAL;
-            return result; 
-        }
-
-        /* Allocate a really really big dummy buffer for NIC to copy the data from,  
-         * this is necessary to force a lot of cache misses by randomly accessing this buffer  */
-        odp_buffer_raw = calloc(1, odp_buf_size + PAGE_SIZE);           // pad it by a page
-        memset(odp_buffer_raw, 1, odp_buf_size + PAGE_SIZE);                // this is necessary to actually allocate memory 
-        for (odp_buffer = odp_buffer_raw; (uint64_t)odp_buffer & CACHE_ALIGNMENT; odp_buffer++);    // cacheline-aligned start point
-        
-        mr_buffers[0] = 
-            rdma_buffer_register(pd, 
-                0,              // For implicit ODP; ref: https://man7.org/linux/man-pages/man3/ibv_reg_mr.3.html
-                SIZE_MAX,       // For implicit ODP
-                (IBV_ACCESS_LOCAL_WRITE | 
-                    IBV_ACCESS_REMOTE_WRITE | 
-                    IBV_ACCESS_REMOTE_READ |
-                    IBV_ACCESS_ON_DEMAND));
-    }
-    else {
-        mr_buffers[0] = 
-            rdma_buffer_alloc(pd,
-                buf_size,
-                (IBV_ACCESS_LOCAL_WRITE | 
-                    IBV_ACCESS_REMOTE_WRITE | 
-                    IBV_ACCESS_REMOTE_READ));
-    }
+    size_t buf_size = msg_size * num_concur;
+    mr_buffers[0] = rdma_buffer_alloc(pd,
+        buf_size,
+        (IBV_ACCESS_LOCAL_WRITE | 
+            IBV_ACCESS_REMOTE_WRITE | 
+            IBV_ACCESS_REMOTE_ATOMIC|
+            IBV_ACCESS_REMOTE_READ));
     if (!mr_buffers[0]) {
         rdma_error("We failed to create the destination buffer, -ENOMEM\n");
         result.err_code = -ENOMEM;
@@ -615,11 +870,6 @@ static result_t measure_xput(
                 (IBV_ACCESS_LOCAL_WRITE | 
                     IBV_ACCESS_REMOTE_WRITE | 
                     IBV_ACCESS_REMOTE_READ));
-            // mr_buffers[i] = rdma_buffer_alloc(pd,
-            //      buf_size,
-            //     (IBV_ACCESS_LOCAL_WRITE | 
-            //         IBV_ACCESS_REMOTE_WRITE | 
-            //         IBV_ACCESS_REMOTE_READ));
 
             if (!mr_buffers[i]) {
                 rdma_error("Registering buffer %d failed\n", i);
@@ -634,31 +884,50 @@ static result_t measure_xput(
 
     /* For sanity check, fill the client buffer with different alphabets in each message. 
      * We can verify this by reading the server buffer later. Only works for RDMA WRITEs though */
-    if (mr_mode != MR_MODE_REGISTER_IMPLICIT_ODP)
-        for (i = 0; i < num_concur; i++)
-            memset(mr_buffers[0]->addr + (i*msg_size), 'a' + i%26, msg_size);
+    for (i = 0; i < num_concur; i++)
+        memset(mr_buffers[0]->addr + (i*msg_size), 'a' + i%26, msg_size);
 
     /* Prepare a template WR for RDMA ops */
-    client_send_sge.addr = (uint64_t) (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? odp_buffer : mr_buffers[0]->addr);  
+    client_send_sge.addr = (uint64_t) mr_buffers[0]->addr;  
     client_send_sge.length = (uint32_t) msg_size;           // Send only msg_size
     client_send_sge.lkey = mr_buffers[0]->lkey;
     /* now we link to the send work request */
     bzero(&client_send_wr, sizeof(client_send_wr));
     client_send_wr.sg_list = &client_send_sge;
     client_send_wr.num_sge = 1;
-    client_send_wr.opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
+    switch (rdma_op) {
+        case RDMA_READ_OP:
+            client_send_wr.opcode = IBV_WR_RDMA_READ;
+        break;
+        case RDMA_WRITE_OP:
+            client_send_wr.opcode = IBV_WR_RDMA_WRITE;
+        break;
+        case RDMA_CAS_OP:
+            client_send_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+        break;
+    }
+    //client_send_wr.opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
     client_send_wr.send_flags = IBV_SEND_SIGNALED;          // NOTE: This tells the other NIC to send completion events
     /* we have to tell server side info for RDMA */
     client_send_wr.wr.rdma.rkey = server_qp_metadata_attr[0].stag.remote_stag;
     client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address;
+
+    //From clover setting up atomics (userspace_one_cs)
+    if (rdma_op == RDMA_CAS_OP) {
+        client_send_wr.wr.atomic.remote_addr = server_qp_metadata_attr[0].address;
+        client_send_wr.wr.atomic.rkey = server_qp_metadata_attr[0].stag.remote_stag;
+        client_send_wr.wr.atomic.compare_add = 0;
+        client_send_wr.wr.atomic.swap = 0;
+    }
+
 
     gettimeofday (&start, NULL);
     rdtsc();
     start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
 
     /* Post until number of max requests in flight is hit */
-    char *buf_ptr = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? odp_buffer : mr_buffers[0]->addr);
-    int	lbuf_offset = 0, rbuf_offset = 0, slot_num = 0;
+    char *buf_ptr = mr_buffers[0]->addr;
+    int	buf_offset = 0, slot_num = 0;
     int buf_num = 0;
     uint64_t wr_posted = 0, wr_acked = 0;
     for (i = 0; i < num_concur; i++) {
@@ -668,7 +937,15 @@ static result_t measure_xput(
         wr_id.s.window_slot = slot_num;
         client_send_wr.wr_id = wr_id.val;                  /* User-assigned id to recognize this WR on completion */
         client_send_sge.addr = (uint64_t) buf_ptr;          /* Sets which mem addr to read from/write to locally */  // FIXME
-        client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + rbuf_offset; 
+        client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + buf_offset; 
+
+        if (rdma_op == RDMA_CAS_OP) {
+            client_send_wr.wr.atomic.remote_addr = server_qp_metadata_attr[0].address + buf_offset;
+            //client_send_wr.wr.atomic.rkey = server_metadata_attr.stag.remote_stag;
+            client_send_wr.wr.atomic.compare_add = 0;
+            client_send_wr.wr.atomic.swap = 0;
+        }
+
         ret = ibv_post_send(client_qp[qp_num], 
                 &client_send_wr,
                 &bad_client_send_wr);
@@ -679,26 +956,27 @@ static result_t measure_xput(
         }
         	
         wr_posted++;
-        slot_num    = (slot_num + 1) % num_concur;
-        rbuf_offset = slot_num * msg_size;
-        lbuf_offset = mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? (rand_xorshf96() % odp_buf_size) & ~CACHE_ALIGNMENT : rbuf_offset;
-	    buf_ptr     = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? odp_buffer : mr_buffers[0]->addr) + lbuf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
+
+        //.This is the number of keys, this function is the one that we will control if we want to have a variable number
+        //of memory reigions to write to.
+
+        #define KEY_COUNT 128
+        //This is for independent keys
+        //slot_num    = (slot_num + 1) % num_concur;
+
+        //This is for 2 keys
+        slot_num = (slot_num + 1) % KEY_COUNT;
+
+        //This is for a single key experiment
+        //slot_num = 0;
+
+
+        buf_offset  = slot_num * msg_size;
+	    buf_ptr     = mr_buffers[0]->addr + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
         buf_num     = (buf_num++) % num_lbuffers;
         // buf_num     = rand_xorshf96() % num_lbuffers;
         qp_num      = (qp_num + 1) % num_qps;
 
-        if (mr_mode == MR_MODE_REGISTER_IN_DATAPTH) {
-            /* Emulate a buffer registration op for each request in datapath so we can capture its latency in the RTT.
-             * We have to both register and de-register the buffer, just registering would cause buffer overflow 
-             * So the number we get is not striclty register latency but at least this will give us a ballpark number */
-            tmpbuffer = rdma_buffer_register(pd,
-                mr_buffers[0]->addr,                // use the same piece of memory
-                buf_size,
-                (IBV_ACCESS_LOCAL_WRITE | 
-                    IBV_ACCESS_REMOTE_WRITE | 
-                    IBV_ACCESS_REMOTE_READ));
-            rdma_buffer_deregister(tmpbuffer);
-        }
     }
 
     /* at this point we are expecting work completions for the requests */
@@ -717,181 +995,69 @@ static result_t measure_xput(
         result.err_code = -errno;
         return result;
     }
+    pthread_t threadId[MAX_THREADS];
+    int32_t total_threads = 2;
+
+
+    struct xput_thread_args targs[MAX_THREADS];
+    for (int i=0;i<total_threads;i++){
+        targs[i].thread_id=i;
+        targs[i].core=4+(2*i);
+        targs[i].num_concur=num_concur;
+        targs[i].cq_ptr=client_cq_threads[i];
+        targs[i].msg_size = msg_size;
+        targs[i].rdma_op = rdma_op;
+        targs[i].num_lbuffers = num_lbuffers;
+        targs[i].start_cycles = start_cycles;
+        targs[i].mr_buffers = mr_buffers;
+        //printf("Forking Pthread %d\n",targs[i].thread_id);
+        finished_running_xput=0;
+        pthread_create(&threadId[i], NULL, &xput_thread, (void*)&targs[i]);
+        //Setupt next itt
+    }
 
     const uint64_t minimum_duration_secs = 10;  /* number of seconds to run the experiment for at least */
-    const uint64_t check_watch_interval = 1e3;  /* Check time every million requests as checking on every request might be too costly */
+    const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
     int stop_posting = 0;
     uint64_t poll_time = 0, poll_count = 0, idle_count = 0;
-    wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
+
+
     do {
-        /* Poll the completion queue for the completion event for the earlier write */
-        xrdtsc();
-        do {
-            n = ibv_poll_cq(cq_ptr, num_concur, wc);       // get upto num_concur entries
-            if (n < 0) {
-                rdma_error("Failed to poll cq for wc due to %d \n", ret);
-                result.err_code = ret;     /* ret is errno here */
-                return result;
-            }
-            poll_count++;
-            if (n == 0)     idle_count++;
-        } while (n < 1);
-        xrdtsc1();
-        xstart_cycles = ( ((int64_t)xcycles_high << 32) | xcycles_low );
-        xend_cycles = ( ((int64_t)xcycles_high1 << 32) | xcycles_low1 );
-        poll_time += (xend_cycles - xstart_cycles);
-
-        /* For each completed request */
-        for (i = 0; i < n; i++) {
-            /* Check that it succeeded */
-            if (wc[i].status != IBV_WC_SUCCESS) {
-                rdma_error("Work completion (WC) has error status: %d, %s at index %ld",  
-                    wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].wr_id);
-                result.err_code =  -(wc[i].status);       /* return negative value */
-                return result;
-            }
-
-            /* Is it time to look at the watch? */
-            if (wr_posted % check_watch_interval == 0) {   
-                rdtsc1();
-                end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
-                if ((end_cycles - start_cycles) >= minimum_duration_secs * CPU_FREQ) {
-                    // we can stop posting
-                    stop_posting = 1;
-                }
-            }
-
-            if (!stop_posting) {
-                /* Issue another request that reads/writes from same locations as the completed one */
-                wr_id.val =  wc[i].wr_id;
-                qp_num = wr_id.s.qp_num;
-                slot_num = wr_id.s.window_slot;
-
-                rbuf_offset  = slot_num * msg_size;
-                lbuf_offset  = mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? (rand_xorshf96() % odp_buf_size) & ~CACHE_ALIGNMENT : rbuf_offset;
-                // lbuf_offset  = (rand_xorshf96() % DUMMY_BUF_SIZE);  // & ~CACHE_ALIGNMENT;        // TODO: May need this
-                buf_ptr      = (mr_mode == MR_MODE_REGISTER_IMPLICIT_ODP ? odp_buffer : mr_buffers[0]->addr) + lbuf_offset;
-                client_send_sge.lkey = mr_buffers[buf_num]->lkey; 
-                client_send_wr.wr_id = wr_id.val;              /* User-assigned id to recognize this WR on completion */
-                client_send_sge.addr = (uint64_t) buf_ptr;
-                client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + rbuf_offset;
-                ret = ibv_post_send(client_qp[qp_num], 
-                        &client_send_wr,
-                        &bad_client_send_wr);
-                if (ret) {
-                    rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-                    result.err_code = -errno;
-                    return result;
-                }
-                wr_posted++;
-                buf_num     = (buf_num++) % num_lbuffers;
-                // buf_num     = rand_xorshf96() % num_lbuffers;
-
-                if (mr_mode == MR_MODE_REGISTER_IN_DATAPTH) {
-                    /* Emulate a buffer registration op for each request in datapath so we can capture its latency in the RTT.
-                    * We have to both register and de-register the buffer, just registering would cause buffer overflow 
-                    * So the number we get is not striclty register latency but at least this will give us a ballpark number */
-                    tmpbuffer = rdma_buffer_register(pd,
-                        mr_buffers[0]->addr,                // use the same piece of memory
-                        buf_size,
-                        (IBV_ACCESS_LOCAL_WRITE | 
-                            IBV_ACCESS_REMOTE_WRITE | 
-                            IBV_ACCESS_REMOTE_READ));
-                    rdma_buffer_deregister(tmpbuffer);
-                }
-            }
+        rdtsc1();
+        end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
+        if ((end_cycles - start_cycles) >= minimum_duration_secs * CPU_FREQ) {
+            //printf("Time is up, sending kill signal to threads");
+            finished_running_xput = 1;
         }
+        sleep(1);
 
-        /* Stop when all the posted WRs are acked */
-        wr_acked += n;
-    } while(wr_acked < wr_posted);
+    } while(!finished_running_xput);
     
-    rdtsc1();
-    end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
-    gettimeofday (&end, NULL);
-    debug("WRs posted: %lu, WRs acked: %lu\n", wr_posted, wr_acked);
+    for (int i=0;i<total_threads;i++){
+        pthread_join(threadId[i],NULL);
+    }
 
     /* Similar to connection management events, we need to acknowledge CQ events */
     ibv_ack_cq_events(cq_ptr, 1 /* we received one event notification. This is not number of WC elements */);
-    
 
-    /* SANITY CHECK */
-    /* In case of RDMA writes, perform a sanity check by reading the server-side buffer and checking its content */
-    if (num_lbuffers == 1 && rdma_op == RDMA_WRITE_OP && mr_mode != MR_MODE_REGISTER_IMPLICIT_ODP) {
-        /* Clear the local buffer and issue a big read */
-        memset(mr_buffers[0]->addr, 0, num_concur * msg_size); 
-
-        /* Now we prepare a READ using same variables but for destination */
-        client_send_sge.addr = (uint64_t) mr_buffers[0]->addr;
-        client_send_sge.length = (uint32_t) msg_size * num_concur;           // entire buffer
-        client_send_sge.lkey = mr_buffers[0]->lkey;
-        /* now we link to the send work request */
-        bzero(&client_send_wr, sizeof(client_send_wr));
-        client_send_wr.sg_list = &client_send_sge;
-        client_send_wr.num_sge = 1;
-        client_send_wr.opcode = IBV_WR_RDMA_READ;
-        client_send_wr.send_flags = IBV_SEND_SIGNALED;
-        /* we have to tell server side info for RDMA */
-        client_send_wr.wr.rdma.rkey = server_qp_metadata_attr[0].stag.remote_stag;
-        client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address;
-        /* Now we post it */
-        ret = ibv_post_send(client_qp[0], 
-                &client_send_wr,
-                &bad_client_send_wr);
-        if (ret) {
-            rdma_error("Failed to read client dst buffer from the master, errno: %d \n", -errno);
-            result.err_code = -errno;
-            return result;
-        }
-        /* at this point we are expecting 1 work completion for the read */
-        ret = process_work_completion_events(io_completion_channel, wc, 1);
-        if(ret != 1 || wc->opcode != IBV_WC_RDMA_READ) {
-            rdma_error("We failed to get 1 work completion for the sanity check read, ret = %d \n",ret);
-            result.err_code = ret;
-            return result;
-        }
-
-        /* Validate the buffer */
-        char* expected = (char*) malloc(msg_size * sizeof(char));
-        for (i = 0; i < num_concur; i++) {
-            memset(expected, 'a' + i%26, msg_size);
-            if (strncmp(expected, (char*) mr_buffers[0]->addr + (i*msg_size), msg_size) != 0) {
-                printf("%d\n", strncmp(expected, (char*) mr_buffers[0]->addr + (i*msg_size), msg_size));
-                rdma_error("Sanity check failed. \nBuffer read from server does not contain expected data at msg index: %d.\n\
-                    Expected: %.*s \n\
-                    Actual: %.*s \n", i+1, msg_size, expected, msg_size, (char*) mr_buffers[0]->addr + (i*msg_size));
-                result.err_code = 1;
-                return result;
-            }
-        }
-        debug("SANITY check complete!\n");
-    }
 
     /* Deregister local MRs */
-    for (i = 0; i < num_lbuffers; i++) {
+    for (i = 0; i < num_lbuffers; i++)
         rdma_buffer_deregister(mr_buffers[i]);
-        if (!odp_buffer_raw)   free(odp_buffer_raw);
-    }	
 
-    /* Calculate duration. See if RDTSC timer agrees with regular ctime.
-     * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
-     * but rdtsc is low overhead so we can use that from (roughly) keeping track of time while we use ctime 
-     * to calculate numbers */
-    double duration_rdtsc = (end_cycles - start_cycles) / CPU_FREQ;
-    double duration_ctime = (double)((end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) * 1.0e-6);
-    debug("Duration as measured by RDTSC: %.2lf secs, by ctime: %.2lf secs\n", duration_rdtsc, duration_ctime);
+    result_t meta_result;
+    meta_result.cq_empty_count=0;
+    meta_result.cq_poll_count=0;
+    meta_result.xput_bps=0;
+    meta_result.xput_ops=0;
+    for (i=0;i<total_threads;i++){
+        meta_result.cq_empty_count+=thread_results[i].cq_empty_count;
+        meta_result.cq_poll_count+=thread_results[i].cq_poll_count;
+        meta_result.xput_bps+=thread_results[i].xput_bps;
+        meta_result.xput_ops+=thread_results[i].xput_ops;
+    }
 
-    double goodput_pps = wr_acked / duration_ctime;
-    double goodput_bps = goodput_pps * msg_size * 8;
-    debug("Goodput = %.2lf Gbps. Sampled for %.2lf seconds\n", goodput_bps / 1e9, duration_ctime);
-    
-    /* Fill in result */
-    result.xput_bps = goodput_bps / 1e9;
-    result.xput_ops = goodput_pps;
-    result.cq_poll_time_percent = poll_time * 100.0 / CPU_FREQ / duration_rdtsc;
-    result.cq_poll_count = poll_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
-    result.cq_empty_count = idle_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
-    return result;
+    return meta_result;
 }
 
 /* Data transfer modes */
@@ -901,413 +1067,6 @@ enum data_transfer_mode {
     DTR_MODE_NIC_GATHER,        // Assume that data is scattered but is gathered by NIC with a scatter-gather op during xmit
     DTR_MODE_PIECE_BY_PIECE,    // Assume that data is scattered but each piece is sent in a different rdma write op
 };
-
-/* Measures throughput for RDMA READ/WRITE ops for a specified message size and number of concurrent messages (i.e., requests in flight) */
-/* Returns xput in ops/sec */
-static result_t measure_xput_scatgath(
-    uint32_t msg_size,                  // payload size
-    uint32_t num_sg_pieces,            // number of scatter-gather pieces
-    int num_concur,                     // number of requests in flight; use 1 for RTT measurements
-    enum rdma_measured_op rdma_op,      // rdma op to use i.e., read or write
-    enum data_transfer_mode dtr_mode,    // data transfer mode
-    int num_qps                         // number of QPs to use
-) {
-    int ret = -1, n, i, j;
-    struct ibv_wc* wc;
-    uint64_t start_cycles, end_cycles;
-    uint64_t xstart_cycles, xend_cycles;
-    struct timeval      start, end;
-    struct ibv_cq *cq_ptr = NULL;
-    void *context = NULL;
-    int num_mr_bufs;
-    result_t result;
-    int qp_num = 0;
-    union work_req_id wr_id;
-    
-    struct ibv_mr **mr_buffers = NULL;           /* Make sure to deregister these local MRs before exiting */
-    struct ibv_mr *one_big_buffer = NULL;       /* Make sure to deregister these local MRs before exiting */
-    
-    if (rdma_op != RDMA_WRITE_OP) {
-        /* Only write ops supported for now */
-        rdma_error("only write supported for scatter-gather ops\n");
-        result.err_code = -EINVAL;
-        return result; 
-    }
-
-    /* Learned that the limit for number of outstanding requests for READ and ATOMIC ops 
-     * is very less; while there is no such limit for WRITES. The connection parameters initiator_depth
-     * and responder_resources determine such limit, which are again limited by hardware device 
-     * attributes max_qp_rd_atom and max_qp_init_rd_atom. Why is there such a limit?  */
-    /* In any case, for now, disallow request for concurrency more than the limit */
-    if (rdma_op == RDMA_READ_OP && num_concur > MAX_RD_AT_IN_FLIGHT) {
-        rdma_error("Device cannot support more than %d outstnading READs (num_concur=%d)\n", 
-            MAX_RD_AT_IN_FLIGHT, num_concur);
-        result.err_code = -EOVERFLOW;
-        return result;
-    }
-
-    /* Some constraints on payload and scatter-gather piece sizes */
-    assert(num_sg_pieces <= MAX_SGE);                   
-    assert(msg_size % num_sg_pieces == 0);              /* that msg size splits into equal parts */
-    uint32_t sg_piece_size = msg_size / num_sg_pieces;
-
-    /* If sending each piece in a separate op, the scenario is equivalent to just measuring xput 
-     * for msg_size = piece_size (assuming that we split the original payload into equal-sized 
-     * pieces *and* that we are running on a single core and no specific ordering is attached to 
-     * transmitting these pieces i.e., concurrency is determined solely by num_concur: the max 
-     * max number of requests allowed in flight). But of course, the returned throughput (ops/sec)
-     * is divided by number of pieces per message because in this method, an operation represents 
-     * sending the whole payload, not just one of its pieces. */
-    if (dtr_mode == DTR_MODE_PIECE_BY_PIECE) {
-        result = measure_xput(
-            sg_piece_size,
-            num_concur,
-            rdma_op,
-            MR_MODE_PRE_REGISTER_WITH_ROTATE,
-            num_sg_pieces,
-            num_qps,
-            UNUSED_VALUE);
-        result.xput_ops /= num_sg_pieces;
-        return result;
-    }
-
-    /* One big buffer to hold aggregated payloads (times the num of requests in flight) */
-    size_t big_buf_size = msg_size * num_concur;
-    one_big_buffer = rdma_buffer_alloc(pd,
-        big_buf_size,
-        (IBV_ACCESS_LOCAL_WRITE | 
-            IBV_ACCESS_REMOTE_WRITE | 
-            IBV_ACCESS_REMOTE_READ));
-    if (!one_big_buffer) {
-        rdma_error("Failed to create the big source buffer, -ENOMEM\n");
-        result.err_code = -ENOMEM;
-        return result;
-    }
-    debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", 0,
-        one_big_buffer->addr, one_big_buffer->length, one_big_buffer->handle, one_big_buffer->lkey, one_big_buffer->rkey);
-
-    /* Allocate multiple small buffers to emulate scattered source data (times the num of requests in flight)
-     *(each message will be gathered in pieces from all these buffers)  */
-    num_mr_bufs = num_sg_pieces;
-    size_t src_buf_size = sg_piece_size * num_concur;
-    mr_buffers = (struct ibv_mr**) malloc(num_mr_bufs * sizeof(struct ibv_mr*));
-    for (i = 0; i < num_mr_bufs; i++) {
-        mr_buffers[i] = rdma_buffer_alloc(pd,
-            src_buf_size,
-            (IBV_ACCESS_LOCAL_WRITE | 
-                IBV_ACCESS_REMOTE_WRITE | 
-                IBV_ACCESS_REMOTE_READ));
-        if (!mr_buffers[i]) {
-            rdma_error("We failed to create the destination buffer, -ENOMEM\n");
-            result.err_code = -ENOMEM;
-            return result;
-        }
-        debug("Buffer registered (%3d): addr = %p, length = %ld, handle = %d, lkey = %d, rkey = %d\n", 0,
-            mr_buffers[i]->addr, mr_buffers[i]->length, mr_buffers[i]->handle, mr_buffers[i]->lkey, mr_buffers[i]->rkey);
-    }
-
-    /* For sanity check, fill the scattered source buffers with different alphabets in each message. 
-     * We can verify this by reading the server buffer later. Only works for RDMA WRITEs though */
-    for (i = 0; i < num_concur; i++)
-        for (j = 0; j < num_mr_bufs; j++)
-            memset(mr_buffers[j]->addr + (i*sg_piece_size), 'a' + i%26, sg_piece_size);
-
-    /* Pre-Prepare SGE lists and WRs for the big buffer for different concurrent requests */
-    struct ibv_send_wr big_buf_wrs[num_concur];
-    bzero(&big_buf_wrs, sizeof(big_buf_wrs));
-    struct ibv_sge big_buf_sge[num_concur];
-    int	big_buf_offset = 0;
-    for (i = 0; i < num_concur; i++) {
-        big_buf_sge[i].addr = (uint64_t) (one_big_buffer->addr + big_buf_offset);  
-        big_buf_sge[i].length = (uint32_t) msg_size;           // Send only msg_size
-        big_buf_sge[i].lkey = one_big_buffer->lkey;   
-        
-        wr_id.s.qp_num = 0;
-        wr_id.s.window_slot = i;
-        big_buf_wrs[i].wr_id = wr_id.val;                               /* User-assigned id to recognize this WR on completion */
-        big_buf_wrs[i].sg_list = &big_buf_sge[i];
-        big_buf_wrs[i].num_sge = 1;
-        big_buf_wrs[i].opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
-        big_buf_wrs[i].send_flags = IBV_SEND_SIGNALED;
-
-        /* we have to tell server side info for RDMA */
-        big_buf_wrs[i].wr.rdma.rkey = server_qp_metadata_attr[0].stag.remote_stag;
-        big_buf_wrs[i].wr.rdma.remote_addr = server_qp_metadata_attr[0].address + big_buf_offset;
-        
-        big_buf_offset  = (big_buf_offset + msg_size) % big_buf_size;
-    }
-
-    /* Pre-Prepare SGE lists and WRs for gathering data from scattered buffers for different concurent requests */
-    struct ibv_send_wr src_buf_wrs[num_concur];
-    bzero(&src_buf_wrs, sizeof(src_buf_wrs));
-    struct ibv_sge src_sge_arr[num_concur][num_mr_bufs];
-    int src_buf_offset = 0;
-    big_buf_offset = 0;
-    for (i = 0; i < num_concur; i++) {
-        for (j = 0; j < num_mr_bufs; j++) {
-            src_sge_arr[i][j].addr = (uint64_t) (mr_buffers[j]->addr + src_buf_offset);  
-            src_sge_arr[i][j].length = (uint32_t) sg_piece_size;   // Send only sg piece
-            src_sge_arr[i][j].lkey = mr_buffers[j]->lkey;
-        }
-
-        wr_id.s.qp_num = 0;
-        wr_id.s.window_slot = i;
-        big_buf_wrs[i].wr_id = wr_id.val;                               /* User-assigned id to recognize this WR on completion */
-        src_buf_wrs[i].sg_list = &src_sge_arr[i][0];
-        src_buf_wrs[i].num_sge = num_mr_bufs;
-        src_buf_wrs[i].opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
-        src_buf_wrs[i].send_flags = IBV_SEND_SIGNALED;
-
-        /* we have to tell server side info for RDMA */
-        src_buf_wrs[i].wr.rdma.rkey = server_qp_metadata_attr[0].stag.remote_stag;
-        src_buf_wrs[i].wr.rdma.remote_addr = server_qp_metadata_attr[0].address + big_buf_offset;
-
-        src_buf_offset  = (src_buf_offset + sg_piece_size) % src_buf_size;
-        big_buf_offset  = (big_buf_offset + msg_size) % big_buf_size;
-    }
-
-    /* Allocate a really really big dummy buffer for CPU to copy the data from, 
-     * to emulate data spread over large space; this is necessary to emulate similar level of 
-     * cache misses which we acheive by randomly accessing this buffer 
-     * TIP: I checked the cache-miss ratio using the `perf` tool */
-    const size_t DUMMY_BUF_SIZE = 1024*1024*1024;  // 1 GB
-    void* dummy_buffer = NULL;
-    if (dtr_mode == DTR_MODE_CPU_GATHER) {
-        dummy_buffer = malloc(DUMMY_BUF_SIZE + msg_size);   
-        memset(dummy_buffer, 1, DUMMY_BUF_SIZE);     // this is necessary to actually allocate memory
-    }
-
-    /* Start timer */
-    gettimeofday (&start, NULL);
-    rdtsc();
-    start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
-
-    /* Post until number of max requests in flight is hit */
-    uint64_t wr_posted = 0, wr_acked = 0, buf_access_pt, unused;
-    qp_num = 0;
-    for (i = 0; i < num_concur; i++) {
-
-        /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
-        if (dtr_mode == DTR_MODE_CPU_GATHER) {
-            for (j = 0; j < num_mr_bufs; j++) {
-                buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
-                unused += *(uint64_t*)(dummy_buffer + buf_access_pt);
-                // memcpy(
-                //     (void*)(big_buf_sge[i].addr + j*sg_piece_size),     // to: big buffer at position of j-th piece
-                //     // (void*)src_sge_arr[i][j].addr,                   // from: scattered data piece number j
-                //     dummy_buffer + buf_access_pt,                       // from: a random point in dummy buffer to encourage a cache miss
-                //     src_sge_arr[i][j].length
-                // );
-            }
-        }
-
-        /* Use this snippet to print a mem buffer while debugging */
-        // *((char*)one_big_buffer->addr + big_buf_size - 1) = '\0';
-        // printf("%s\n", (char*)one_big_buffer->addr); 
-
-        /* find the wr to send and save current qp number in wr_id */
-        struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_NIC_GATHER ? &src_buf_wrs[i] : &big_buf_wrs[i];
-        wr_id.val = wr_to_send->wr_id;
-        wr_id.s.qp_num = qp_num;
-        wr_to_send->wr_id = wr_id.val;
-
-        ret = ibv_post_send(client_qp[qp_num], 
-                wr_to_send,
-                &bad_client_send_wr);
-        if (ret) {
-            rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-            result.err_code = -errno;
-            return result;
-        }
-        	
-        wr_posted++;
-        qp_num = (qp_num + 1) % num_qps;        // round-robin across available qps
-    }
-
-    /* at this point we are expecting work completions for the requests */
-    /* We wait for the notification on the CQ channel */
-    ret = ibv_get_cq_event(io_completion_channel, &cq_ptr, &context);
-    if (ret) {
-        rdma_error("Failed to get next CQ event due to %d \n", -errno);
-        result.err_code = -errno;
-        return result;
-    }
-
-    /* Request for more notifications. */
-    ret = ibv_req_notify_cq(cq_ptr, 0);
-    if (ret) {
-        rdma_error("Failed to request further notifications %d \n", -errno);
-        result.err_code = -errno;
-        return result;
-    }
-
-    const uint64_t minimum_duration_secs = 10;  /* number of seconds to run the experiment for at least */
-    const uint64_t check_watch_interval = 1e6;  /* Check time every million requests as checking on every request might be too costly */
-    int stop_posting = 0;
-    uint64_t poll_time = 0, poll_count = 0, idle_count = 0;
-    wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
-    do {
-        /* Poll the completion queue for the completion event for the earlier write */
-        xrdtsc();
-        do {
-            n = ibv_poll_cq(cq_ptr, num_concur, wc);       // get upto num_concur entries
-            if (n < 0) {
-                rdma_error("Failed to poll cq for wc due to %d \n", ret);
-                result.err_code = ret;     /* ret is errno here */
-                return result;
-            } 
-            poll_count++;
-            if (n == 0)     idle_count++;
-        } while (n < 1);
-        xrdtsc1();
-        xstart_cycles = ( ((int64_t)xcycles_high << 32) | xcycles_low );
-        xend_cycles = ( ((int64_t)xcycles_high1 << 32) | xcycles_low1 );
-        poll_time += (xend_cycles - xstart_cycles);
-
-        /* For each completed request */
-        for (i = 0; i < n; i++) {
-            /* Check that it succeeded */
-            if (wc[i].status != IBV_WC_SUCCESS) {
-                rdma_error("Work completion (WC) has error status: %d, %s at index %ld",  
-                    wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].wr_id);
-                result.err_code =  -(wc[i].status);       /* return negative value */
-                return result;
-            }
-
-            /* Is it time to look at the watch? */
-            if (wr_posted % check_watch_interval == 0) {   
-                rdtsc1();
-                end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
-                if ((end_cycles - start_cycles) >= minimum_duration_secs * CPU_FREQ) {
-                    // we can stop posting
-                    stop_posting = 1;
-                }
-            }
-
-            if (!stop_posting) {
-                /* Issue another request that reads/writes from same locations and on the same QP as the completed one */
-                wr_id.val = wc[i].wr_id;
-                int idx = wr_id.s.window_slot;
-                qp_num = wr_id.s.qp_num;
-                
-                /* In case of cpu gather, emulate it by copying data from scattered src buffers to the big buffer */
-                for (j = 0; j < num_mr_bufs; j++) {
-                    buf_access_pt = rand_xorshf96() % DUMMY_BUF_SIZE;
-                    if (dtr_mode == DTR_MODE_CPU_GATHER) {
-                        *((uint64_t*)(dummy_buffer + buf_access_pt)) += 1000;
-                        // memcpy(
-                        //     (void*)(big_buf_sge[idx].addr + j*sg_piece_size),       // to: big buffer at position of j-th piece
-                        //     // (void*)src_sge_arr[idx][j].addr,                     // from: scattered data piece number j
-                        //     dummy_buffer + buf_access_pt,                           // from: a random point in dummy buffer to encourage a cache miss
-                        //     src_sge_arr[idx][j].length
-                        // );
-                    }
-                }
-
-                struct ibv_send_wr* wr_to_send = dtr_mode == DTR_MODE_NIC_GATHER ? &src_buf_wrs[idx] : &big_buf_wrs[idx];
-                ret = ibv_post_send(client_qp[qp_num], 
-                    wr_to_send,
-                    &bad_client_send_wr);
-                if (ret) {
-                    rdma_error("Failed to write client src buffer, errno: %d \n", -errno);
-                    result.err_code = -errno;
-                    return result;
-                }
-                wr_posted++;
-            }
-        }
-
-        /* Stop when all the posted WRs are acked */
-        wr_acked += n;
-    } while(wr_acked < wr_posted);
-    
-    rdtsc1();
-    end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
-    gettimeofday (&end, NULL);
-    debug("WRs posted: %lu, WRs acked: %lu\n", wr_posted, wr_acked);
-
-    /* Similar to connection management events, we need to acknowledge CQ events */
-    ibv_ack_cq_events(cq_ptr, 1 /* we received one event notification. This is not number of WC elements */);
-
-    /* SANITY CHECK */
-    /* In case of RDMA writes, perform a sanity check by reading the server-side buffer and checking its content */
-    if (rdma_op == RDMA_WRITE_OP && dtr_mode != DTR_MODE_NO_GATHER && dtr_mode != DTR_MODE_CPU_GATHER) {
-        /* Clear the local buffer and issue a big read */
-        memset(one_big_buffer->addr, 0, num_concur * msg_size); 
-
-        /* Now we prepare a READ using same variables but for destination */
-        client_send_sge.addr = (uint64_t) one_big_buffer->addr;
-        client_send_sge.length = (uint32_t) msg_size * num_concur;           // entire buffer
-        client_send_sge.lkey = one_big_buffer->lkey;
-        /* now we link to the send work request */
-        bzero(&client_send_wr, sizeof(client_send_wr));
-        client_send_wr.sg_list = &client_send_sge;
-        client_send_wr.num_sge = 1;
-        client_send_wr.opcode = IBV_WR_RDMA_READ;
-        client_send_wr.send_flags = IBV_SEND_SIGNALED;
-        /* we have to tell server side info for RDMA */
-        client_send_wr.wr.rdma.rkey = server_qp_metadata_attr[0].stag.remote_stag;
-        client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address;
-        /* Now we post it */
-        ret = ibv_post_send(client_qp[0], 
-                &client_send_wr,
-                &bad_client_send_wr);
-        if (ret) {
-            rdma_error("Failed to read client dst buffer from the master, errno: %d \n", -errno);
-            result.err_code = -errno;
-            return result;
-        }
-        /* at this point we are expecting 1 work completion for the read */
-        ret = process_work_completion_events(io_completion_channel, wc, 1);
-        if(ret != 1 || wc->opcode != IBV_WC_RDMA_READ) {
-            rdma_error("We failed to get 1 work completion for the sanity check read, ret = %d \n",ret);
-            result.err_code = ret;
-            return result;
-        }
-
-        /* Validate the buffer */
-        char* expected = (char*) malloc(msg_size * sizeof(char));
-        for (i = 0; i < num_concur; i++) {
-            memset(expected, 'a' + i%26, msg_size);
-            if (strncmp(expected, (char*) one_big_buffer->addr + (i*msg_size), msg_size) != 0) {
-                printf("%d\n", strncmp(expected, (char*) one_big_buffer->addr + (i*msg_size), msg_size));
-                rdma_error("Sanity check failed. \nBuffer read from server does not contain expected data at msg index: %d.\n\
-                    Expected: %.*s \n\
-                    Actual: %.*s \n", i+1, msg_size, expected, msg_size, (char*) one_big_buffer->addr + (i*msg_size));
-                result.err_code = 1;
-                return result;
-            }
-        }
-        debug("SANITY check complete!\n");
-    }
-
-    /* Deregister local MRs */
-    for (i = 0; i < num_mr_bufs; i++)
-        rdma_buffer_deregister(mr_buffers[i]);	
-    rdma_buffer_deregister(one_big_buffer);
-    if (dummy_buffer != NULL)   free(dummy_buffer);
-
-    /* Calculate duration. See if RDTSC timer agrees with regular ctime.
-     * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
-     * but rdtsc is low overhead so we can use that from (roughly) keeping track of time while we use ctime 
-     * to calculate numbers */
-    double duration_rdtsc = (end_cycles - start_cycles) / CPU_FREQ;
-    double duration_ctime = (double)((end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) * 1.0e-6);
-    debug("Duration as measured by RDTSC: %.2lf secs, by ctime: %.2lf secs\n", duration_rdtsc, duration_ctime);
-
-    double goodput_pps = wr_acked / duration_ctime;
-    double goodput_bps = goodput_pps * msg_size * 8;
-    debug("Goodput = %.2lf Gbps. Sampled for %.2lf seconds\n", goodput_bps / 1e9, duration_ctime);
-    debug("Poll CQ time (cycles) and poll count per window: %lf, %lf\n", poll_time * 100.0 / CPU_FREQ / duration_rdtsc, poll_count * num_concur *1.0 / wr_acked);
-
-    /* Fill in result */
-    result.xput_bps = goodput_bps / 1e9;
-    result.xput_ops = goodput_pps;
-    result.cq_poll_time_percent = poll_time * 100.0 / CPU_FREQ / duration_rdtsc;
-    result.cq_poll_count = poll_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
-    result.cq_empty_count = idle_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
-    return result;
-}
 
 
 /* This function disconnects the RDMA connection from the server and cleans up 
@@ -1366,6 +1125,17 @@ static int client_clean()
         rdma_error("Failed to destroy completion queue cleanly, %d \n", -errno);
         // we continue anyways;
     }
+
+    for (int i=0;i<MAX_THREADS;i++) {
+        int ret = -1;
+        /* Destroy CQ */
+        ret = ibv_destroy_cq(client_cq_threads[i]);
+        if (ret) {
+            rdma_error("Failed to destroy completion queue cleanly, %d \n", -errno);
+            // we continue anyways;
+        }
+    }
+
     /* Destroy completion channel */
     ret = ibv_destroy_comp_channel(io_completion_channel);
     if (ret) {
@@ -1406,33 +1176,28 @@ int main(int argc, char **argv) {
     char* dummy_text = "HELLO";
     src = dst = NULL; 
     int simple = 0, i;
-    int rtt_flag = 0, rttv2_flag = 0, xput_flag = 0, xputv2_flag = 0;
+    int rtt_flag = 0, xput_flag = 0, xputv2_flag = 0;
     int num_concur = 1;
     int num_mbuf = 1;
     int msg_size = 0;
     int write_to_file = 0;
     char outfile[200] ;
     int num_qps = 1;
-    int num_pieces = 0;
-    long odp_size, odp_enabled = 0;
 
     /* Parse Command Line Arguments */
     static const struct option options[] = {
         {.name = "simple", .has_arg = no_argument, .val = 's'},
         {.name = "rtt", .has_arg = no_argument, .val = 'r'},
-        {.name = "rttv2", .has_arg = no_argument, .val = 'w'},
         {.name = "xput", .has_arg = no_argument, .val = 'x'},
         {.name = "xputv2", .has_arg = no_argument, .val = 'y'},
         {.name = "concur", .has_arg = required_argument, .val = 'c'},
         {.name = "buffers", .has_arg = required_argument, .val = 'b'},
         {.name = "msgsize", .has_arg = required_argument, .val = 'm'},
-        {.name = "pieces", .has_arg = required_argument, .val = 'z'},
-        {.name = "odp", .has_arg = required_argument, .val = 'd'},
         {.name = "out", .has_arg = required_argument, .val = 'o'},
         {.name = "qps", .has_arg = required_argument, .val = 'q'},
         {}
     };
-    while ((option = getopt_long(argc, argv, "sa:p:rxyc:b:m:o:q:z:d:", options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "sa:p:rxyc:b:m:o:q:", options, NULL)) != -1) {
         switch (option) {
             case 's':
                 /* run the basic example to test connection */
@@ -1466,10 +1231,6 @@ int main(int argc, char **argv) {
             case 'r':
                 /* Run RTT measurement (for all msg sizes) */
                 rtt_flag = 1;     
-                break;
-            case 'w':
-                /* Run advanced xput measurements for different data transfer modes  */
-                rttv2_flag = 1;     
                 break;
             case 'x':
                 /* Run xput measurement */
@@ -1506,15 +1267,6 @@ int main(int argc, char **argv) {
                     return -1;
                 }
                 break;
-            case 'z':
-                /* number of scatter-gather pieces to use */
-                /* num_pieces < 0: invalid; = 0: vary from 1 to 16; > 0: use the number. Default is 0 (vary) */
-                num_pieces = strtol(optarg, NULL, 0); 
-                if (num_pieces < 0 || num_pieces > 4096) {
-                    rdma_error("Invalid num_pieces. Should be between 1 and %d\n", 4096);
-                    return -1;
-                }
-                break;
             case 'q':
                 /* input number of queue pairs */
                 /* qp_num < 0: invalid; = 0: vary from 1 to MAX_QPS; > 0: use the number. Default is 1 qp */
@@ -1523,16 +1275,6 @@ int main(int argc, char **argv) {
                     rdma_error("Invalid qps. Should be between 1 and %d\n", MAX_QPS);
                     return -1;
                 }
-                break;
-            case 'd':
-                /* odp buffer size; this setting also activates odp feature */
-                /* odp_size < 0: invalid; = 0: vary from 1 to MAX_ODP_SIZE; > 0: use the number. Default is odp disabled */
-                odp_size = strtol(optarg, NULL, 0); 
-                if (odp_size < 0 || odp_size % PAGE_SIZE) {
-                    rdma_error("Invalid ODP size. Should be a non-negative multiple of page size (4096)\n");
-                    return -1;
-                }
-                odp_enabled = 1;
                 break;  
             case 'o':
                 /* output file to write to */
@@ -1542,13 +1284,8 @@ int main(int argc, char **argv) {
             default:
                 usage();
                 break;
+            }
         }
-    }
-
-    if (odp_enabled && (rttv2_flag || xputv2_flag)) {    
-        rdma_error("ODP only supported for v1 (non-scatter-gather) measurements for now!");
-        return -1;
-    }
 
     /* Setup shared resources */
     ret = client_setup_shared_resources();
@@ -1621,21 +1358,16 @@ int main(int argc, char **argv) {
             }
         }
         
-        int min_num_concur = num_concur == 0 ? 2 : num_concur;
-        int max_num_concur = num_concur == 0 ? 150 : num_concur;        /* Empirically found that anything above this number does not matter for single core */
+        int min_num_concur = num_concur == 0 ? 1 : num_concur;
+        int max_num_concur = num_concur == 0 ? 256 : num_concur;        /* Empirically found that anything above this number does not matter for single core */
 
-        int min_msg_size = msg_size == 0 ? 64   : msg_size;
+        int min_msg_size = msg_size == 0 ? 64 : msg_size;
         int max_msg_size = msg_size == 0 ? 4096 : msg_size;
+        int msg_size_incr = 64;
 
-        int min_num_mbuf = num_mbuf == 0 ? 1    : num_mbuf;
-        int max_num_mbuf = num_mbuf == 0 ? 1e6  : num_mbuf;
+        int min_num_mbuf = num_mbuf == 0 ? 1 : num_mbuf;
         // int max_num_mbuf = num_mbuf == 0 ? MAX_MR : num_mbuf;
-
-        int min_num_pieces = num_pieces == 0 ? 1    : num_pieces;
-        int max_num_pieces = num_pieces == 0 ? 16   : num_pieces;
-
-        long min_odp_size = odp_enabled && odp_size == 0 ? 1*PAGE_SIZE   : odp_size;
-        long max_odp_size = odp_enabled && odp_size == 0 ? MAX_ODP_SIZE  : odp_size;
+        int max_num_mbuf = num_mbuf == 0 ? 1e6 : num_mbuf;
 
         /* Get roundtrip latencies for ops */
         if (rtt_flag) {
@@ -1652,20 +1384,17 @@ int main(int argc, char **argv) {
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,odp buf size,write,read\n");
+                fprintf(fptr, "msg size,write,read\n");
             }
             printf("=========== RTTs =============\n");
-            printf("msg size,odp buf size,write,read\n");
-            for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) {
-                for (odp_size = min_odp_size; odp_size <= max_odp_size; odp_size *= 2) {
-                    enum mem_reg_mode mr_mode = odp_enabled ? MR_MODE_REGISTER_IMPLICIT_ODP : MR_MODE_PRE_REGISTER_WITH_ROTATE;
-                    double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, mr_mode, num_mbuf, num_qps, odp_size).xput_ops;
-                    double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, mr_mode, num_mbuf, num_qps, odp_size).xput_ops;
-                    printf("%d,%ld,%.2lf,%.2lf\n", msg_size, odp_size, wrtt, rrtt);
-                    if (write_to_file) {
-                        fprintf(fptr, "%d,%ld,%.2lf,%.2lf\n", msg_size, odp_size, wrtt, rrtt);
-                        fflush(fptr);
-                    }
+            printf("msg size,write,read\n");
+            for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += msg_size_incr) {
+                double wrtt = 1e6 / measure_xput(msg_size, 1, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps).xput_ops;
+                double rrtt = 1e6 / measure_xput(msg_size, 1, RDMA_READ_OP, MR_MODE_PRE_REGISTER_WITH_ROTATE, num_mbuf, num_qps).xput_ops;
+                printf("%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
+                if (write_to_file) {
+                    fprintf(fptr, "%d,%.2lf,%.2lf\n", msg_size, wrtt, rrtt);
+                    fflush(fptr);
                 }
             }
             if (write_to_file)  fclose(fptr);
@@ -1673,122 +1402,41 @@ int main(int argc, char **argv) {
 
         /* Get xputs for ops */
         if (xput_flag) {
-            // printf("Goodput for %3d B READS (%3d QPE) : %0.2lf gbps\n", 1024, 1, 
-            //     measure_xput(1024, 1, RDMA_READ_OP) * 1024 * 8 / 1e9);       // READ Xput
-            // printf("Goodput for %3d B WRITES (%3d QPE) : %0.2lf gbps\n", 1024, 1, 
-            //     measure_xput(1024, 1, RDMA_WRITE_OP) );       // WRITE Xput
+            uint32_t msg_size = 8;
+            uint32_t num_concur = 1;
+            // max_reqs_in_flight = 20;
+            // printf("Goodput for %3d B READS (%3d QPE) : %0.2lf gbps\n", msg_size, max_reqs_in_flight, 
+            //     measure_xput(msg_size, max_reqs_in_flight, RDMA_READ_OP) * msg_size * 8 / 1e9);       // READ Xput
+            // printf("Goodput for %3d B WRITES (%3d QPE) : %0.2lf gbps\n", msg_size, max_reqs_in_flight, 
+            //     measure_xput(msg_size, max_reqs_in_flight, RDMA_WRITE_OP) );       // WRITE Xput
 
             FILE *fptr;
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,window size,mbufs,odp buf size,write_ops,write_gbps,read_ops,read_gbps,write_pp,write_pcq,write_ecq\n");
+                fprintf(fptr,"msg size,concur,write_ops,write,read_ops,read,cas_ops,cas\n");
             }
             printf("=========== Xput =============\n");
-            printf("msg size,window size,mbufs,odp buf size,write_ops,write_gbps,read_ops,read_gbps,write_pp,write_pcq,write_ecq\n");
-            for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur *= 2)
-                for (num_mbuf = min_num_mbuf; num_mbuf <= max_num_mbuf; num_mbuf += 500)    // FIXME
-                    for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) {
-                        for (odp_size = min_odp_size; odp_size <= max_odp_size; odp_size *= 2) {
-                            enum mem_reg_mode mr_mode = odp_enabled ? MR_MODE_REGISTER_IMPLICIT_ODP : MR_MODE_PRE_REGISTER_WITH_ROTATE;
-                            result_t wput = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, mr_mode, num_mbuf, num_qps, odp_size);
-                            double rput_ops = (num_concur <= MAX_RD_AT_IN_FLIGHT) ? measure_xput(msg_size, num_concur, RDMA_READ_OP, mr_mode, num_mbuf, num_qps, odp_size).xput_ops : 0;
-                            double rput_gbps = rput_ops * msg_size * 8 / 1e9;
-                            printf("%d,%d,%d,%ld,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
-                                msg_size, num_concur, num_mbuf, odp_size,
-                                wput.xput_ops, wput.xput_bps, 
-                                rput_ops, rput_gbps, 
-                                wput.cq_poll_time_percent, wput.cq_poll_count, wput.cq_empty_count);
-                            if (write_to_file) {
-                                fprintf(fptr, "%d,%d,%d,%ld,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
-                                    msg_size, num_concur, num_mbuf, odp_size,
-                                    wput.xput_ops, wput.xput_bps,
-                                    rput_ops, rput_gbps, 
-                                    wput.cq_poll_time_percent, wput.cq_poll_count, wput.cq_empty_count);
-                                fflush(fptr);
-                            }
-                        }
-                    }
-            if (write_to_file)  fclose(fptr);
-        }
-
-        /* Get advanced roundtrip latencies for various data transfer modes */
-        if (rttv2_flag) {
-            /* Generate RTT numbers for different msg sizes */
-            FILE *fptr;
+            printf("msg size,concur,write_ops,write,read_ops,read,cas_ops,cas\n");
+            num_mbuf=1;
+            for (num_concur =128; num_concur <=1024; num_concur *= 2) {
+            //for (num_concur = 16; num_concur <=32; num_concur*=2) {
+            double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops; 
+            double rput_ops =  measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+            double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+            double wput_gbps = wput_ops * msg_size * 8 / 1e9;
+            double rput_gbps = rput_ops * msg_size * 8 / 1e9;
+            double casput_gbps = casput_ops * msg_size * 8 / 1e9;
+            printf("%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, wput_ops, wput_gbps, rput_ops, rput_gbps,casput_ops,casput_gbps);
             if (write_to_file) {
-                printf("Writing output to: %s\n", outfile);\
-                fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,sg pieces,base_rtt,cpu_gather_rtt,nic_gather_rtt,piece_by_piece_rtt\n");
+                fprintf(fptr,"%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_concur, wput_ops, wput_gbps, rput_ops, rput_gbps,casput_ops,casput_gbps);
+                fflush(fptr);
+            
             }
-            printf("=========== RTTs =============\n");
-            num_concur = 1;
-            for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) 
-                for (num_pieces = min_num_pieces; num_pieces <= max_num_pieces; num_pieces++) {
-                    if (msg_size % num_pieces != 0)     // Only consider factors
-                        continue;
-                    result_t mode1 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER, num_qps);
-                    result_t mode2 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER, num_qps);
-                    result_t mode3 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER, num_qps);
-                    result_t mode4 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_PIECE_BY_PIECE, num_qps);
-                    printf("%d,%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_pieces,
-                         MOPS_TO_RTT(mode1.xput_ops), MOPS_TO_RTT(mode2.xput_ops), MOPS_TO_RTT(mode3.xput_ops), MOPS_TO_RTT(mode4.xput_ops));
-                    if (write_to_file) {
-                        fprintf(fptr, "%d,%d,%.2lf,%.2lf,%.2lf,%.2lf\n", msg_size, num_pieces,  
-                            MOPS_TO_RTT(mode1.xput_ops), MOPS_TO_RTT(mode2.xput_ops), MOPS_TO_RTT(mode3.xput_ops), MOPS_TO_RTT(mode4.xput_ops));
-                        fflush(fptr);
-                    }
-                }
+            }
             if (write_to_file)  fclose(fptr);
         }
 
-        /* Get advanced xput numbers for various data transfer modes */
-        if (xputv2_flag) {
-            printf("Blue flame disabled?: %s\n", getenv("MLX5_SHUT_UP_BF"));
-
-            FILE *fptr;
-            if (write_to_file) {
-                printf("Writing output to: %s\n", outfile);
-                fptr = fopen(outfile, "w");
-                fprintf(fptr, "msg size,window size,sg pieces,"
-                    "base_ops,base_gbps,base_pp,base_pcq,base_ecq,"
-                    "cpu_gather_ops,cpu_gather_gpbs,cpu_gather_pp,cpu_gather_pcq,cpu_gather_ecq,"
-                    "nic_gather_ops,nic_gather_gbps,nic_gather_pp,nic_gather_pcq,nic_gather_ecq,"
-                    "piece_by_piece_ops,piece_by_piece_gbps,piece_by_piece_pp,piece_by_piece_pcq,piece_by_piece_ecq\n");
-            }
-            printf("=========== Xput =============\n");
-            printf("msg size,window size,sg pieces,"
-                "base_ops,base_gbps,base_pp,base_pcq,base_ecq,"
-                "cpu_gather_ops,cpu_gather_gpbs,cpu_gather_pp,cpu_gather_pcq,cpu_gather_ecq,"
-                "nic_gather_ops,nic_gather_gbps,nic_gather_pp,nic_gather_pcq,nic_gather_ecq,"
-                "piece_by_piece_ops,piece_by_piece_gbps,piece_by_piece_pp,piece_by_piece_pcq,piece_by_piece_ecq\n");
-            for (num_concur = min_num_concur; num_concur <= max_num_concur; num_concur += 8)
-                for (msg_size = min_msg_size; msg_size <= max_msg_size; msg_size += 64) 
-                    for (num_pieces = min_num_pieces; num_pieces <= max_num_pieces; num_pieces++) {
-                        if (msg_size % num_pieces != 0)     // Only consider factors
-                            continue;
-                        result_t mode1 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NO_GATHER, num_qps);
-                        result_t mode2 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_CPU_GATHER, num_qps);
-                        result_t mode3 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_NIC_GATHER, num_qps);
-                        result_t mode4 = measure_xput_scatgath(msg_size, num_pieces, num_concur, RDMA_WRITE_OP, DTR_MODE_PIECE_BY_PIECE, num_qps);
-                        printf("%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
-                            msg_size, num_concur, num_pieces, 
-                            mode1.xput_ops, mode1.xput_bps, mode1.cq_poll_time_percent, mode1.cq_poll_count, mode1.cq_empty_count, 
-                            mode2.xput_ops, mode2.xput_bps, mode2.cq_poll_time_percent, mode2.cq_poll_count, mode2.cq_empty_count, 
-                            mode3.xput_ops, mode3.xput_bps, mode3.cq_poll_time_percent, mode3.cq_poll_count, mode3.cq_empty_count, 
-                            mode4.xput_ops, mode4.xput_bps, mode4.cq_poll_time_percent, mode4.cq_poll_count, mode4.cq_empty_count);
-                        if (write_to_file) {
-                            fprintf(fptr, "%d,%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf\n", 
-                                msg_size, num_concur, num_pieces, 
-                                mode1.xput_ops, mode1.xput_bps, mode1.cq_poll_time_percent, mode1.cq_poll_count, mode1.cq_empty_count, 
-                                mode2.xput_ops, mode2.xput_bps, mode2.cq_poll_time_percent, mode2.cq_poll_count, mode2.cq_empty_count, 
-                                mode3.xput_ops, mode3.xput_bps, mode3.cq_poll_time_percent, mode3.cq_poll_count, mode3.cq_empty_count, 
-                                mode4.xput_ops, mode4.xput_bps, mode4.cq_poll_time_percent, mode4.cq_poll_count, mode4.cq_empty_count);
-                            fflush(fptr);
-                        }
-                }
-            if (write_to_file)  fclose(fptr);
-        }
     }
 
     for (i = 0; i < num_qps; i++) {
