@@ -46,6 +46,7 @@ typedef struct {
 
 result_t thread_results[MAX_THREADS];
 static struct ibv_cq *client_cq_threads[MAX_THREADS];
+static struct ibv_comp_channel *io_completion_channel_threads[MAX_THREADS];
 
 
 /* Rdtsc blocks for time measurements */
@@ -107,109 +108,11 @@ unsigned long rand_xorshf96(void) {          //period 2^96-1
     return z;
 }
 
-static int client_setup_shared_resources_threaded() {
-    int ret = -1, i;
-    /* Get RDMA devices */
-    devices = rdma_get_devices(&ret);
-    if (ret == 0) {
-        rdma_error("No RDMA devices found\n");
-        return -ENODEV;
-    }
-    printf("%d devices found, using the first one: %s\n", ret, devices[0]->device->name);
-    for(i = 0; i < ret; i++)    debug("Device %d: %s\n", i+1, devices[i]->device->name);
-
-    /* Create shared resources for all conections per device i.e., cq, pd, etc */
-    /* Protection Domain (PD) is similar to a "process abstraction" 
-     * in the operating system. All resources are tied to a particular PD. 
-     * And accessing recourses across PD will result in a protection fault.
-     */
-    pd = ibv_alloc_pd(devices[0]);
-    if (!pd) {
-        rdma_error("Failed to alloc pd, errno: %d \n", -errno);
-        return -errno;
-    }
-    debug("pd allocated at %p \n", pd);
-
-    /* Now we need a completion channel, were the I/O completion 
-     * notifications are sent. Remember, this is different from connection 
-     * management (CM) event notifications. 
-     * A completion channel is also tied to an RDMA device
-     */
-    io_completion_channel = ibv_create_comp_channel(devices[0]);
-    if (!io_completion_channel) {
-        rdma_error("Failed to create IO completion event channel, errno: %d\n",
-                   -errno);
-        return -errno;
-    }
-    debug("completion event channel created at : %p \n", io_completion_channel);
-
-    ret = ibv_query_device(devices[0], &dev_attr);    
-    if (ret) {
-        rdma_error("Failed to get device info, errno: %d\n", -errno);
-        return -errno;
-    }
-    printf("got device info. max qpe: %d, sge: %d, cqe: %d, max rd/at qp depth/outstanding: %d/%d max mr size: %lu\n", 
-        dev_attr.max_qp_wr, dev_attr.max_sge, dev_attr.max_cqe, dev_attr.max_qp_init_rd_atom, dev_attr.max_qp_rd_atom, 
-        dev_attr.max_mr_size);
-
-    /* Now we create a completion queue (CQ) where actual I/O 
-     * completion metadata is placed. The metadata is packed into a structure 
-     * called struct ibv_wc (wc = work completion). ibv_wc has detailed 
-     * information about the work completion. An I/O request in RDMA world 
-     * is called "work" ;) 
-     */
-    client_cq = ibv_create_cq(devices[0] /* which device*/, 
-        CQ_CAPACITY             /* maximum device capacity*/, 
-        NULL                    /* user context, not used here */,
-        io_completion_channel   /* which IO completion channel */, 
-        0                       /* signaling vector, not used here*/);
-    if (!client_cq) {
-        rdma_error("Failed to create CQ, errno: %d \n", -errno);
-        return -errno;
-    }
-    debug("CQ created at %p with %d elements \n", client_cq, client_cq->cqe);
-    ret = ibv_req_notify_cq(client_cq, 0);
-    if (ret) {
-        rdma_error("Failed to request notifications, errno: %d\n", -errno);
-        return -errno;
-    }
-    
-    /*  Open a channel used to report asynchronous communication event */
-    cm_event_channel = rdma_create_event_channel();
-    if (!cm_event_channel) {
-        rdma_error("Creating cm event channel failed, errno: %d \n", -errno);
-        return -errno;
-    }
-    debug("RDMA CM event channel is created at : %p \n", cm_event_channel);
-
-    printf("making thread completion queues as well\n");
-    for(int i=0;i<MAX_THREADS;i++){
-        client_cq_threads[i] = ibv_create_cq(devices[0] /* which device*/, 
-            CQ_CAPACITY             /* maximum device capacity*/, 
-            NULL                    /* user context, not used here */,
-            io_completion_channel   /* which IO completion channel */, 
-            0                       /* signaling vector, not used here*/);
-        if (!client_cq_threads[i]) {
-            rdma_error("Failed to create CQ, errno: %d \n", -errno);
-            return -errno;
-        }
-        debug("CQ created at %p with %d elements \n", client_cq_threads[i], client_cq_threads[i]->cqe);
-        ret = ibv_req_notify_cq(client_cq_threads[i], 0);
-        if (ret) {
-            rdma_error("Failed to request notifications, errno: %d\n", -errno);
-            return -errno;
-        }
-
-    }
-
-    return ret;
-
-}
 
 /* This function prepares client side shared resources for all connections */
 static int client_setup_shared_resources()
 {
-    int ret = -1, i;
+    int ret = -1;
     /* Get RDMA devices */
     devices = rdma_get_devices(&ret);
     if (ret == 0) {
@@ -217,7 +120,7 @@ static int client_setup_shared_resources()
         return -ENODEV;
     }
     printf("%d devices found, using the first one: %s\n", ret, devices[0]->device->name);
-    for(i = 0; i < ret; i++)    debug("Device %d: %s\n", i+1, devices[i]->device->name);
+    for(int i = 0; i < ret; i++)    debug("Device %d: %s\n", i+1, devices[i]->device->name);
 
     /* Create shared resources for all conections per device i.e., cq, pd, etc */
     /* Protection Domain (PD) is similar to a "process abstraction" 
@@ -231,18 +134,22 @@ static int client_setup_shared_resources()
     }
     debug("pd allocated at %p \n", pd);
 
-    /* Now we need a completion channel, were the I/O completion 
-     * notifications are sent. Remember, this is different from connection 
-     * management (CM) event notifications. 
-     * A completion channel is also tied to an RDMA device
-     */
-    io_completion_channel = ibv_create_comp_channel(devices[0]);
-    if (!io_completion_channel) {
-        rdma_error("Failed to create IO completion event channel, errno: %d\n",
-                   -errno);
-        return -errno;
+    for(int i=0;i<MAX_THREADS;i++){
+        printf("allocing completion channel %d\n",i);
+        /* Now we need a completion channel, were the I/O completion 
+        * notifications are sent. Remember, this is different from connection 
+        * management (CM) event notifications. 
+        * A completion channel is also tied to an RDMA device
+        */
+        io_completion_channel_threads[i] = ibv_create_comp_channel(devices[0]);
+        printf("io completion channel @ %p\n",io_completion_channel_threads[i]);
+        if (!io_completion_channel_threads[i]) {
+            rdma_error("Failed to create IO completion event channel %d, errno: %d\n",
+                    i,-errno);
+            return -errno;
+        }
+        debug("completion event channel created at : %p \n", io_completion_channel_threads[i]);
     }
-    debug("completion event channel created at : %p \n", io_completion_channel);
 
     ret = ibv_query_device(devices[0], &dev_attr);    
     if (ret) {
@@ -253,27 +160,6 @@ static int client_setup_shared_resources()
         dev_attr.max_qp_wr, dev_attr.max_sge, dev_attr.max_cqe, dev_attr.max_qp_init_rd_atom, dev_attr.max_qp_rd_atom, 
         dev_attr.max_mr_size);
 
-    /* Now we create a completion queue (CQ) where actual I/O 
-     * completion metadata is placed. The metadata is packed into a structure 
-     * called struct ibv_wc (wc = work completion). ibv_wc has detailed 
-     * information about the work completion. An I/O request in RDMA world 
-     * is called "work" ;) 
-     */
-    client_cq = ibv_create_cq(devices[0] /* which device*/, 
-        CQ_CAPACITY             /* maximum device capacity*/, 
-        NULL                    /* user context, not used here */,
-        io_completion_channel   /* which IO completion channel */, 
-        0                       /* signaling vector, not used here*/);
-    if (!client_cq) {
-        rdma_error("Failed to create CQ, errno: %d \n", -errno);
-        return -errno;
-    }
-    debug("CQ created at %p with %d elements \n", client_cq, client_cq->cqe);
-    ret = ibv_req_notify_cq(client_cq, 0);
-    if (ret) {
-        rdma_error("Failed to request notifications, errno: %d\n", -errno);
-        return -errno;
-    }
     
     /*  Open a channel used to report asynchronous communication event */
     cm_event_channel = rdma_create_event_channel();
@@ -288,13 +174,15 @@ static int client_setup_shared_resources()
         client_cq_threads[i] = ibv_create_cq(devices[0] /* which device*/, 
             CQ_CAPACITY             /* maximum device capacity*/, 
             NULL                    /* user context, not used here */,
-            io_completion_channel   /* which IO completion channel */, 
+            //io_completion_channel   /* which IO completion channel */, 
+            io_completion_channel_threads[i]   /* which IO completion channel */, 
+            //io_completion_channel_threads[i]   /* which IO completion channel */, 
             0                       /* signaling vector, not used here*/);
         if (!client_cq_threads[i]) {
             rdma_error("Failed to create CQ, errno: %d \n", -errno);
             return -errno;
         }
-        debug("CQ created at %p with %d elements \n", client_cq_threads[i], client_cq_threads[i]->cqe);
+        printf("CQ created at %p with %d elements \n", client_cq_threads[i], client_cq_threads[i]->cqe);
         ret = ibv_req_notify_cq(client_cq_threads[i], 0);
         if (ret) {
             rdma_error("Failed to request notifications, errno: %d\n", -errno);
@@ -395,7 +283,7 @@ static int client_prepare_connection(struct sockaddr_in *s_addr, int qp_num, int
         return -errno;
     }
     client_qp[qp_num] = cm_client_qp_id[qp_num]->qp;
-    debug("QP %d created at %p \n", i+1, client_qp[qp_num]);
+    printf("QP %d created at %p \n", qp_num, client_qp[qp_num]);
     return ret;
 }
 
@@ -530,7 +418,8 @@ static int client_xchange_metadata_with_server(int qp_num, char* buffer, uint32_
     /* at this point we are expecting 2 work completion. One for our 
      * send and one for recv that we will get from the server for 
      * its buffer information */
-    ret = process_work_completion_events(io_completion_channel, 
+    printf("UNSAFE!!!! Stop using qp num, make it working with threads");
+    ret = process_work_completion_events(io_completion_channel_threads[qp_num], 
             wc, 2);
     if(ret != 2) {
         rdma_error("We failed to get 2 work completions , ret = %d \n",
@@ -596,7 +485,7 @@ static int client_remote_memory_ops(int qp_num)
         return -errno;
     }
     /* at this point we are expecting 1 work completion for the write */
-    ret = process_work_completion_events(io_completion_channel, &wc, 1);
+    ret = process_work_completion_events(io_completion_channel_threads[qp_num], &wc, 1);
     if(ret != 1) {
         rdma_error("We failed to get 1 work completions , ret = %d \n", ret);
         return ret;
@@ -628,7 +517,7 @@ static int client_remote_memory_ops(int qp_num)
         return -errno;
     }
     /* at this point we are expecting 1 work completion for the write */
-    ret = process_work_completion_events(io_completion_channel, &wc, 1);
+    ret = process_work_completion_events(io_completion_channel_threads[qp_num], &wc, 1);
     if(ret != 1) {
         rdma_error("We failed to get 1 work completions , ret = %d \n", ret);
         return ret;
@@ -708,14 +597,21 @@ void * xput_thread(void * args) {
     rdtsc();
     start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
 
+    #define HIST_SIZE 32
+    uint32_t hist_size[HIST_SIZE];
+    bzero(hist_size,HIST_SIZE*sizeof(uint32_t));
+
+    #define HIST_SIZE 32
+    uint32_t qp_rec[HIST_SIZE];
+    bzero(qp_rec,HIST_SIZE*sizeof(uint32_t));
+
     wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
     do {
         /* Poll the completion queue for the completion event for the earlier write */
-        xrdtsc();
+        //xrdtsc();
         do {
-            printf("poll attempt\n");
+            //printf("Thread %d, CQ %p\n",targs->thread_id,cq_ptr);
             n = ibv_poll_cq(cq_ptr, num_concur, wc);       // get upto num_concur entries
-            printf("polling %d\n",n);
             //printf("exit poll\n");
             if (n < 0) {
                 printf("Failed to poll cq for wc due to %d\n", ret);
@@ -732,8 +628,8 @@ void * xput_thread(void * args) {
             }     
         } while (n < 1);
         /* For each completed request */
+        hist_size[n]++;
         for (i = 0; i < n; i++) {
-            printf("actually received something\n");
             /* Check that it succeeded */
             if (wc[i].status != IBV_WC_SUCCESS) {
                 rdma_error("Work completion (WC) has error status: %d, %s at index %ld\n",  
@@ -742,9 +638,18 @@ void * xput_thread(void * args) {
 
             if (!finished_running_xput) {
                 /* Issue another request that reads/writes from same locations as the completed one */
+
                 wr_id.val =  wc[i].wr_id;
-                qp_num = wr_id.s.qp_num;
+                qp_rec[wr_id.s.qp_num]++;
+                // if(wr_id.s.qp_num != targs->thread_id) {
+                //     printf("Thread %d QP %d\n",targs->thread_id,wr_id.s.qp_num);
+                // }
+                qp_num = targs->thread_id;
                 slot_num = wr_id.s.window_slot;
+
+
+                wr_id.s.qp_num=wr_id.s.qp_num;
+
 
                 buf_offset = slot_num * msg_size;
                 buf_ptr     = mr_buffers[buf_num]->addr + buf_offset;
@@ -766,7 +671,7 @@ void * xput_thread(void * args) {
                     exit(1);
                 }
                 wr_posted++;
-                buf_num     = (buf_num++) % num_lbuffers;
+                buf_num     = targs->thread_id;
             }
         }
         wr_acked += n;
@@ -798,6 +703,20 @@ void * xput_thread(void * args) {
     result.cq_poll_count = poll_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
     result.cq_empty_count = idle_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
     thread_results[targs->thread_id]=result;
+
+    // if (targs->thread_id == 0){
+    //     for(int i=0;i<HIST_SIZE;i++){
+    //         printf("%d\t%d\n",i,hist_size[i]);
+    //     }
+    // }
+
+
+    printf("\n");
+    if(targs->thread_id==0) {
+        for(int i=0;i<HIST_SIZE;i++){
+            printf("(tid %d) %d\t%d\n",targs->thread_id,i,qp_rec[i]);
+        }
+    }
 
 }
 
@@ -837,12 +756,13 @@ static result_t measure_xput(
         return result;
     }
 
+    /*
     num_lbuffers = (mr_mode == MR_MODE_PRE_REGISTER_WITH_ROTATE) ? num_lbuffers : 1;
     if (num_lbuffers <= 0) {
         rdma_error("Invalid number of client-side buffers provided: %d\n", num_lbuffers);
         result.err_code = -EINVAL;
         return result; 
-    }
+    }*/
 
     /* Allocate client buffers to read/write from (use the same piece of underlying memory) */
     mr_buffers = (struct ibv_mr**) malloc(num_lbuffers * sizeof(struct ibv_mr*));
@@ -869,6 +789,7 @@ static result_t measure_xput(
                 buf_size,
                 (IBV_ACCESS_LOCAL_WRITE | 
                     IBV_ACCESS_REMOTE_WRITE | 
+                    IBV_ACCESS_REMOTE_ATOMIC|
                     IBV_ACCESS_REMOTE_READ));
 
             if (!mr_buffers[i]) {
@@ -933,9 +854,10 @@ static result_t measure_xput(
     for (i = 0; i < num_concur; i++) {
         /* it is safe to reuse client_send_wr object after post_() returns */
         client_send_sge.lkey = mr_buffers[buf_num]->lkey;   /* Sets which MR to use to access the local address */   
-        wr_id.s.qp_num = qp_num;
-        wr_id.s.window_slot = slot_num;
-        client_send_wr.wr_id = wr_id.val;                  /* User-assigned id to recognize this WR on completion */
+        //wr_id.s.qp_num = qp_num;
+        //wr_id.s.window_slot = slot_num;
+        client_send_wr.wr_id = qp_num;                  /* User-assigned id to recognize this WR on completion */
+        //client_send_wr.wr_id = wr_id.val;                  /* User-assigned id to recognize this WR on completion */
         client_send_sge.addr = (uint64_t) buf_ptr;          /* Sets which mem addr to read from/write to locally */  // FIXME
         client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + buf_offset; 
 
@@ -957,46 +879,37 @@ static result_t measure_xput(
         	
         wr_posted++;
 
-        //.This is the number of keys, this function is the one that we will control if we want to have a variable number
-        //of memory reigions to write to.
-
-        #define KEY_COUNT 128
-        //This is for independent keys
-        //slot_num    = (slot_num + 1) % num_concur;
-
-        //This is for 2 keys
-        slot_num = (slot_num + 1) % KEY_COUNT;
-
-        //This is for a single key experiment
-        //slot_num = 0;
-
+        slot_num    = (slot_num + 1) % num_concur;
 
         buf_offset  = slot_num * msg_size;
-	    buf_ptr     = mr_buffers[0]->addr + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
-        buf_num     = (buf_num++) % num_lbuffers;
+        buf_num     = (buf_num + 1) % num_lbuffers;
+	    buf_ptr     = mr_buffers[buf_num]->addr + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
         // buf_num     = rand_xorshf96() % num_lbuffers;
         qp_num      = (qp_num + 1) % num_qps;
 
     }
 
-    /* at this point we are expecting work completions for the requests */
-    /* We wait for the notification on the CQ channel */
-    ret = ibv_get_cq_event(io_completion_channel, &cq_ptr, &context);
-    if (ret) {
-        rdma_error("Failed to get next CQ event due to %d \n", -errno);
-        result.err_code = -errno;
-        return result;
-    }
-
-    /* Request for more notifications. */
-    ret = ibv_req_notify_cq(cq_ptr, 0);
-    if (ret) {
-        rdma_error("Failed to request further notifications %d \n", -errno);
-        result.err_code = -errno;
-        return result;
-    }
     pthread_t threadId[MAX_THREADS];
-    int32_t total_threads = 2;
+    int32_t total_threads = num_qps;
+
+    struct ibv_cq *local_client_cq_threads[MAX_THREADS];
+
+
+    for (int i=0;i<total_threads;i++){
+        ret = ibv_get_cq_event(io_completion_channel_threads[i], &client_cq_threads[i], &context);
+        printf("Local CQ %p\n",local_client_cq_threads[i]);
+        if (ret) {
+            rdma_error("Failed to get next CQ event due to %d \n", -errno);
+            result.err_code = -errno;
+            return result;
+        }
+        ret = ibv_req_notify_cq(client_cq_threads[i], 0);
+        if (ret) {
+            rdma_error("Failed to request further notifications %d \n", -errno);
+            result.err_code = -errno;
+            return result;
+        }
+    }
 
 
     struct xput_thread_args targs[MAX_THREADS];
@@ -1005,6 +918,7 @@ static result_t measure_xput(
         targs[i].core=4+(2*i);
         targs[i].num_concur=num_concur;
         targs[i].cq_ptr=client_cq_threads[i];
+        //targs[i].cq_ptr=cq_ptr;
         targs[i].msg_size = msg_size;
         targs[i].rdma_op = rdma_op;
         targs[i].num_lbuffers = num_lbuffers;
@@ -1038,7 +952,10 @@ static result_t measure_xput(
     }
 
     /* Similar to connection management events, we need to acknowledge CQ events */
-    ibv_ack_cq_events(cq_ptr, 1 /* we received one event notification. This is not number of WC elements */);
+    //ibv_ack_cq_events(local_client_cq_threads[0], 1 /* we received one event notification. This is not number of WC elements */);
+    for (int i=0;i<total_threads;i++){
+        ibv_ack_cq_events(local_client_cq_threads[i], 1 /* we received one event notification. This is not number of WC elements */);
+    }
 
 
     /* Deregister local MRs */
@@ -1119,12 +1036,6 @@ static int client_disconnect_and_clean(int qp_num)
 static int client_clean()
 {
     int ret = -1;
-    /* Destroy CQ */
-    ret = ibv_destroy_cq(client_cq);
-    if (ret) {
-        rdma_error("Failed to destroy completion queue cleanly, %d \n", -errno);
-        // we continue anyways;
-    }
 
     for (int i=0;i<MAX_THREADS;i++) {
         int ret = -1;
@@ -1136,11 +1047,13 @@ static int client_clean()
         }
     }
 
-    /* Destroy completion channel */
-    ret = ibv_destroy_comp_channel(io_completion_channel);
-    if (ret) {
-        rdma_error("Failed to destroy completion channel cleanly, %d \n", -errno);
-        // we continue anyways;
+    for (int i=0;i<MAX_THREADS;i++) {
+        /* Destroy completion channel */
+        ret = ibv_destroy_comp_channel(io_completion_channel_threads[i]);
+        if (ret) {
+            rdma_error("Failed to destroy completion channel cleanly, %d \n", -errno);
+            // we continue anyways;
+        }
     }
     /* We free the buffers */
     free(src);
@@ -1418,9 +1331,9 @@ int main(int argc, char **argv) {
             }
             printf("=========== Xput =============\n");
             printf("msg size,concur,write_ops,write,read_ops,read,cas_ops,cas\n");
-            num_mbuf=1;
-            for (num_concur =128; num_concur <=1024; num_concur *= 2) {
-            //for (num_concur = 16; num_concur <=32; num_concur*=2) {
+            num_mbuf=num_qps;
+            //for (num_concur =128; num_concur <=1024; num_concur *= 2) {
+            for (num_concur = 16; num_concur <=128; num_concur*=2) {
             double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops; 
             double rput_ops =  measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
             double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
