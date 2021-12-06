@@ -108,7 +108,7 @@ unsigned long rand_xorshf96(void) {          //period 2^96-1
     return z;
 }
 
-
+uint32_t thread_contexts[MAX_THREADS];
 /* This function prepares client side shared resources for all connections */
 static int client_setup_shared_resources()
 {
@@ -171,13 +171,14 @@ static int client_setup_shared_resources()
 
     printf("making thread completion queues as well\n");
     for(int i=0;i<MAX_THREADS;i++){
+        thread_contexts[i]=i;
         client_cq_threads[i] = ibv_create_cq(devices[0] /* which device*/, 
             CQ_CAPACITY             /* maximum device capacity*/, 
-            NULL                    /* user context, not used here */,
+            &thread_contexts[i]                    /* user context, not used here */,
             //io_completion_channel   /* which IO completion channel */, 
             io_completion_channel_threads[i]   /* which IO completion channel */, 
             //io_completion_channel_threads[i]   /* which IO completion channel */, 
-            0                       /* signaling vector, not used here*/);
+            i                       /* signaling vector, not used here*/);
         if (!client_cq_threads[i]) {
             rdma_error("Failed to create CQ, errno: %d \n", -errno);
             return -errno;
@@ -551,6 +552,9 @@ struct xput_thread_args {
     int num_lbuffers;
 };
 
+#define HIST_SIZE 32
+uint32_t qp_rec_global[MAX_THREADS][HIST_SIZE];
+
 void * xput_thread(void * args) {
     struct xput_thread_args * targs = (struct xput_thread_args *)args;
     //printf("Hello from xput going to core %d\n",targs->core);
@@ -593,17 +597,21 @@ void * xput_thread(void * args) {
 
     char * buf_ptr;
 
+    printf("[Thread %d] io ref %d\n",targs->thread_id, cq_ptr->channel->refcnt);
+
     gettimeofday (&start, NULL);
     rdtsc();
     start_cycles = ( ((int64_t)cycles_high << 32) | cycles_low );
+    uint32_t *qp_rec=qp_rec_global[targs->thread_id];
 
-    #define HIST_SIZE 32
-    uint32_t hist_size[HIST_SIZE];
-    bzero(hist_size,HIST_SIZE*sizeof(uint32_t));
-
-    #define HIST_SIZE 32
-    uint32_t qp_rec[HIST_SIZE];
     bzero(qp_rec,HIST_SIZE*sizeof(uint32_t));
+
+    printf("\n");
+    if(targs->thread_id==0) {
+        for(int i=0;i<HIST_SIZE;i++){
+            printf("(tid %d) %d\t%d\n",targs->thread_id,i,qp_rec[i]);
+        }
+    }
 
     wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
     do {
@@ -628,7 +636,7 @@ void * xput_thread(void * args) {
             }     
         } while (n < 1);
         /* For each completed request */
-        hist_size[n]++;
+        //hist_size[n]++;
         for (i = 0; i < n; i++) {
             /* Check that it succeeded */
             if (wc[i].status != IBV_WC_SUCCESS) {
@@ -639,17 +647,22 @@ void * xput_thread(void * args) {
             if (!finished_running_xput) {
                 /* Issue another request that reads/writes from same locations as the completed one */
 
+
                 wr_id.val =  wc[i].wr_id;
+
+                //if(wr_id.s.qp_num != targs->thread_id && wr_id.s.qp_num > 2) {
+                    /*
+                if(wr_id.s.qp_num != targs->thread_id) {
+                    printf("Thread %d QP %d CQ: %p\n",targs->thread_id,wr_id.s.qp_num, cq_ptr);
+                }*/
+
+                if(wr_id.s.qp_num > 8) {
+                    printf("(2) Thread %d QP %d CQ: %p\n",targs->thread_id,wr_id.s.qp_num, cq_ptr);
+                }
+
                 qp_rec[wr_id.s.qp_num]++;
-                // if(wr_id.s.qp_num != targs->thread_id) {
-                //     printf("Thread %d QP %d\n",targs->thread_id,wr_id.s.qp_num);
-                // }
                 qp_num = targs->thread_id;
                 slot_num = wr_id.s.window_slot;
-
-
-                wr_id.s.qp_num=wr_id.s.qp_num;
-
 
                 buf_offset = slot_num * msg_size;
                 buf_ptr     = mr_buffers[buf_num]->addr + buf_offset;
@@ -851,12 +864,16 @@ static result_t measure_xput(
     int	buf_offset = 0, slot_num = 0;
     int buf_num = 0;
     uint64_t wr_posted = 0, wr_acked = 0;
+
     for (i = 0; i < num_concur; i++) {
         /* it is safe to reuse client_send_wr object after post_() returns */
         client_send_sge.lkey = mr_buffers[buf_num]->lkey;   /* Sets which MR to use to access the local address */   
         //wr_id.s.qp_num = qp_num;
         //wr_id.s.window_slot = slot_num;
-        client_send_wr.wr_id = qp_num;                  /* User-assigned id to recognize this WR on completion */
+        wr_id.s.qp_num=qp_num;
+        wr_id.s.window_slot=slot_num;
+        client_send_wr.wr_id = wr_id.val;                  /* User-assigned id to recognize this WR on completion */
+
         //client_send_wr.wr_id = wr_id.val;                  /* User-assigned id to recognize this WR on completion */
         client_send_sge.addr = (uint64_t) buf_ptr;          /* Sets which mem addr to read from/write to locally */  // FIXME
         client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address + buf_offset; 
@@ -880,10 +897,10 @@ static result_t measure_xput(
         wr_posted++;
 
         slot_num    = (slot_num + 1) % num_concur;
-
         buf_offset  = slot_num * msg_size;
         buf_num     = (buf_num + 1) % num_lbuffers;
 	    buf_ptr     = mr_buffers[buf_num]->addr + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
+        //printf("%p buf\n",buf_ptr);
         // buf_num     = rand_xorshf96() % num_lbuffers;
         qp_num      = (qp_num + 1) % num_qps;
 
@@ -894,16 +911,20 @@ static result_t measure_xput(
 
     struct ibv_cq *local_client_cq_threads[MAX_THREADS];
 
+    for (int i=0;i<total_threads;i++){
+        printf("Global CQ %p\n",client_cq_threads[i]);
+    }
+
 
     for (int i=0;i<total_threads;i++){
-        ret = ibv_get_cq_event(io_completion_channel_threads[i], &client_cq_threads[i], &context);
+        ret = ibv_get_cq_event(io_completion_channel_threads[i], &local_client_cq_threads[i], &context);
         printf("Local CQ %p\n",local_client_cq_threads[i]);
         if (ret) {
             rdma_error("Failed to get next CQ event due to %d \n", -errno);
             result.err_code = -errno;
             return result;
         }
-        ret = ibv_req_notify_cq(client_cq_threads[i], 0);
+        ret = ibv_req_notify_cq(local_client_cq_threads[i], 0);
         if (ret) {
             rdma_error("Failed to request further notifications %d \n", -errno);
             result.err_code = -errno;
@@ -951,10 +972,33 @@ static result_t measure_xput(
         pthread_join(threadId[i],NULL);
     }
 
+    sleep(1);
+    wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
+    uint32_t unfinished_requests=0;
+    for (int i=0;i<total_threads;i++){
+        do {
+            //printf("Thread %d, CQ %p\n",targs->thread_id,cq_ptr);
+            n = ibv_poll_cq(client_cq_threads[i], num_concur, wc);       // get upto num_concur entries
+            //printf("exit poll\n");
+            if (n < 0) {
+                printf("Failed to poll cq for wc due to %d\n", ret);
+                rdma_error("Failed to poll cq for wc due to %d \n", ret);
+                exit(1);
+            }
+            unfinished_requests+=n;
+            if (n == 0) {
+                printf("Thread %d unfinihed %d\n",i,unfinished_requests);
+                break;
+            }     
+        } while (n < 1);
+    }
+
+
+
     /* Similar to connection management events, we need to acknowledge CQ events */
     //ibv_ack_cq_events(local_client_cq_threads[0], 1 /* we received one event notification. This is not number of WC elements */);
     for (int i=0;i<total_threads;i++){
-        ibv_ack_cq_events(local_client_cq_threads[i], 1 /* we received one event notification. This is not number of WC elements */);
+        ibv_ack_cq_events(local_client_cq_threads[i], 64 /* we received one event notification. This is not number of WC elements */);
     }
 
 
@@ -1333,7 +1377,7 @@ int main(int argc, char **argv) {
             printf("msg size,concur,write_ops,write,read_ops,read,cas_ops,cas\n");
             num_mbuf=num_qps;
             //for (num_concur =128; num_concur <=1024; num_concur *= 2) {
-            for (num_concur = 16; num_concur <=128; num_concur*=2) {
+            for (num_concur = 32; num_concur <=128; num_concur*=2) {
             double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops; 
             double rput_ops =  measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
             double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
