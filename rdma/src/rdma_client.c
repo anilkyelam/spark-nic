@@ -32,7 +32,7 @@ static struct ibv_sge client_send_sge, server_recv_sge;
 static char *src = NULL, *dst = NULL; 
 
 static int finished_running_xput=0;
-#define MAX_THREADS 16
+#define MAX_THREADS 32
 #define MULTI_CQ
 
 typedef struct {
@@ -419,7 +419,6 @@ static int client_xchange_metadata_with_server(int qp_num, char* buffer, uint32_
     /* at this point we are expecting 2 work completion. One for our 
      * send and one for recv that we will get from the server for 
      * its buffer information */
-    printf("UNSAFE!!!! Stop using qp num, make it working with threads");
     ret = process_work_completion_events(io_completion_channel_threads[qp_num], 
             wc, 2);
     if(ret != 2) {
@@ -555,6 +554,14 @@ struct xput_thread_args {
 #define HIST_SIZE 32
 uint32_t qp_rec_global[MAX_THREADS][HIST_SIZE];
 
+inline int get_buf_offset(int slot_num, int msg_size) {
+    return slot_num * 128;
+}
+
+int get_buffer_size(int num_concur,int msg_size) {
+    return num_concur *(get_buf_offset(1,msg_size) - get_buf_offset(0, msg_size));
+}
+
 void * xput_thread(void * args) {
     struct xput_thread_args * targs = (struct xput_thread_args *)args;
     //printf("Hello from xput going to core %d\n",targs->core);
@@ -585,8 +592,44 @@ void * xput_thread(void * args) {
     union work_req_id wr_id;
 
 
-    static struct ibv_send_wr local_client_send_wr, *local_bad_client_send_wr;
-    local_client_send_wr = client_send_wr;
+    struct ibv_send_wr local_client_send_wr, *local_bad_client_send_wr;
+    //local_client_send_wr = client_send_wr;
+
+    struct ibv_sge local_client_send_sge;
+    local_client_send_sge.addr = (uint64_t) mr_buffers[targs->thread_id]->addr;  
+    local_client_send_sge.length = (uint32_t) msg_size;           // Send only msg_size
+    local_client_send_sge.lkey = mr_buffers[targs->thread_id]->lkey;
+
+    bzero(&local_client_send_wr, sizeof(local_client_send_wr));
+    local_client_send_wr.sg_list = &local_client_send_sge;
+    local_client_send_wr.num_sge = 1;
+    switch (rdma_op) {
+        case RDMA_READ_OP:
+            local_client_send_wr.opcode = IBV_WR_RDMA_READ;
+        break;
+        case RDMA_WRITE_OP:
+            local_client_send_wr.opcode = IBV_WR_RDMA_WRITE;
+        break;
+        case RDMA_CAS_OP:
+            local_client_send_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+        break;
+    }
+    //client_send_wr.opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
+    local_client_send_wr.send_flags = IBV_SEND_SIGNALED;          // NOTE: This tells the other NIC to send completion events
+    //local_client_send_wr.send_flags = IBV_SEND_INLINE;          // NOTE: This tells the other NIC to send completion events
+    /* we have to tell server side info for RDMA */
+    local_client_send_wr.wr.rdma.rkey = server_qp_metadata_attr[0].stag.remote_stag;
+    local_client_send_wr.wr.rdma.remote_addr = server_qp_metadata_attr[0].address;
+
+    //From clover setting up atomics (userspace_one_cs)
+    if (rdma_op == RDMA_CAS_OP) {
+        local_client_send_wr.wr.atomic.remote_addr = server_qp_metadata_attr[0].address;
+        local_client_send_wr.wr.atomic.rkey = server_qp_metadata_attr[0].stag.remote_stag;
+        local_client_send_wr.wr.atomic.compare_add = 0;
+        local_client_send_wr.wr.atomic.swap = 0;
+    }
+
+
 
     result_t result;
 
@@ -597,7 +640,7 @@ void * xput_thread(void * args) {
 
     char * buf_ptr;
 
-    printf("[Thread %d] io ref %d\n",targs->thread_id, cq_ptr->channel->refcnt);
+    //printf("[Thread %d] io ref %d\n",targs->thread_id, cq_ptr->channel->refcnt);
 
     gettimeofday (&start, NULL);
     rdtsc();
@@ -606,12 +649,10 @@ void * xput_thread(void * args) {
 
     bzero(qp_rec,HIST_SIZE*sizeof(uint32_t));
 
-    printf("\n");
-    if(targs->thread_id==0) {
-        for(int i=0;i<HIST_SIZE;i++){
-            printf("(tid %d) %d\t%d\n",targs->thread_id,i,qp_rec[i]);
-        }
-    }
+    // printf("\n");
+    // for(int i=0;i<8;i++){
+    //     printf("(tid %d) %d\t%d \tqp_hist_loc[%p]\n",targs->thread_id,i,qp_rec[i],qp_rec);
+    // }
 
     wc = (struct ibv_wc *) calloc (num_concur, sizeof(struct ibv_wc));
     do {
@@ -649,22 +690,12 @@ void * xput_thread(void * args) {
 
 
                 wr_id.val =  wc[i].wr_id;
-
-                //if(wr_id.s.qp_num != targs->thread_id && wr_id.s.qp_num > 2) {
-                    /*
-                if(wr_id.s.qp_num != targs->thread_id) {
-                    printf("Thread %d QP %d CQ: %p\n",targs->thread_id,wr_id.s.qp_num, cq_ptr);
-                }*/
-
-                if(wr_id.s.qp_num > 8) {
-                    printf("(2) Thread %d QP %d CQ: %p\n",targs->thread_id,wr_id.s.qp_num, cq_ptr);
-                }
-
                 qp_rec[wr_id.s.qp_num]++;
                 qp_num = targs->thread_id;
                 slot_num = wr_id.s.window_slot;
 
-                buf_offset = slot_num * msg_size;
+                //buf_offset = slot_num * msg_size;
+                buf_offset = get_buf_offset(slot_num,msg_size);
                 buf_ptr     = mr_buffers[buf_num]->addr + buf_offset;
 
                 local_client_send_wr.wr_id = wr_id.val;              /* User-assigned id to recognize this WR on completion */
@@ -693,8 +724,6 @@ void * xput_thread(void * args) {
     rdtsc1();
     end_cycles = ( ((int64_t)cycles_high1 << 32) | cycles_low1 );
     gettimeofday (&end, NULL);
-    //printf("Done Thread on core %d\n",targs->core);
-    //printf("[Core %d] WRs posted: %lu, WRs acked: %lu\n", targs->core,wr_posted, wr_acked);
 
     /* Calculate duration. See if RDTSC timer agrees with regular ctime.
      * ctime is more accurate on longer timescales as rdtsc depends on cpu frequency which is not stable
@@ -711,25 +740,10 @@ void * xput_thread(void * args) {
     /* Fill in result */
     result.xput_bps = goodput_bps / 1e9;
     result.xput_ops = goodput_pps;
-    //printf("XPUT OPS %f\n",result.xput_ops);
     result.cq_poll_time_percent = poll_time * 100.0 / CPU_FREQ / duration_rdtsc;
     result.cq_poll_count = poll_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
     result.cq_empty_count = idle_count * 1.0 / wr_acked;     // TODO: Is dividing by wr the right way to interpret this number?
     thread_results[targs->thread_id]=result;
-
-    // if (targs->thread_id == 0){
-    //     for(int i=0;i<HIST_SIZE;i++){
-    //         printf("%d\t%d\n",i,hist_size[i]);
-    //     }
-    // }
-
-
-    printf("\n");
-    if(targs->thread_id==0) {
-        for(int i=0;i<HIST_SIZE;i++){
-            printf("(tid %d) %d\t%d\n",targs->thread_id,i,qp_rec[i]);
-        }
-    }
 
 }
 
@@ -779,7 +793,8 @@ static result_t measure_xput(
 
     /* Allocate client buffers to read/write from (use the same piece of underlying memory) */
     mr_buffers = (struct ibv_mr**) malloc(num_lbuffers * sizeof(struct ibv_mr*));
-    size_t buf_size = msg_size * num_concur;
+    //size_t buf_size = msg_size * num_concur;
+    size_t buf_size = get_buffer_size(num_concur,msg_size);
     mr_buffers[0] = rdma_buffer_alloc(pd,
         buf_size,
         (IBV_ACCESS_LOCAL_WRITE | 
@@ -834,7 +849,8 @@ static result_t measure_xput(
             client_send_wr.opcode = IBV_WR_RDMA_READ;
         break;
         case RDMA_WRITE_OP:
-            client_send_wr.opcode = IBV_WR_RDMA_WRITE;
+            client_send_wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+            client_send_wr.imm_data = htonl(0x1234);
         break;
         case RDMA_CAS_OP:
             client_send_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
@@ -896,8 +912,13 @@ static result_t measure_xput(
         	
         wr_posted++;
 
+        #define PARALLEL_KEYS 1
         slot_num    = (slot_num + 1) % num_concur;
-        buf_offset  = slot_num * msg_size;
+        //slot_num    = (slot_num + 1) % PARALLEL_KEYS;
+
+
+        //buf_offset  = slot_num * msg_size * 1024;
+        buf_offset = get_buf_offset(slot_num,msg_size);
         buf_num     = (buf_num + 1) % num_lbuffers;
 	    buf_ptr     = mr_buffers[buf_num]->addr + buf_offset;     /* We can always use mr_buffers[0] as all buffers point to same memory */
         //printf("%p buf\n",buf_ptr);
@@ -911,14 +932,14 @@ static result_t measure_xput(
 
     struct ibv_cq *local_client_cq_threads[MAX_THREADS];
 
-    for (int i=0;i<total_threads;i++){
-        printf("Global CQ %p\n",client_cq_threads[i]);
-    }
+    // for (int i=0;i<total_threads;i++){
+    //     printf("Global CQ %p\n",client_cq_threads[i]);
+    // }
 
 
     for (int i=0;i<total_threads;i++){
         ret = ibv_get_cq_event(io_completion_channel_threads[i], &local_client_cq_threads[i], &context);
-        printf("Local CQ %p\n",local_client_cq_threads[i]);
+        //printf("Local CQ %p\n",local_client_cq_threads[i]);
         if (ret) {
             rdma_error("Failed to get next CQ event due to %d \n", -errno);
             result.err_code = -errno;
@@ -936,6 +957,7 @@ static result_t measure_xput(
     struct xput_thread_args targs[MAX_THREADS];
     for (int i=0;i<total_threads;i++){
         targs[i].thread_id=i;
+        //targs[i].core=4+(2*i);
         targs[i].core=4+(2*i);
         targs[i].num_concur=num_concur;
         targs[i].cq_ptr=client_cq_threads[i];
@@ -1377,10 +1399,10 @@ int main(int argc, char **argv) {
             printf("msg size,concur,write_ops,write,read_ops,read,cas_ops,cas\n");
             num_mbuf=num_qps;
             //for (num_concur =128; num_concur <=1024; num_concur *= 2) {
-            for (num_concur = 32; num_concur <=128; num_concur*=2) {
+            for (num_concur = num_qps; num_concur <=num_qps*(MAX_RD_AT_IN_FLIGHT*4); num_concur*=2) {
+            double rput_ops =  0.0;//measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
             double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops; 
-            double rput_ops =  measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
-            double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+            double casput_ops = 0.0;// measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
             double wput_gbps = wput_ops * msg_size * 8 / 1e9;
             double rput_gbps = rput_ops * msg_size * 8 / 1e9;
             double casput_gbps = casput_ops * msg_size * 8 / 1e9;
