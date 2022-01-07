@@ -13,6 +13,8 @@ SERVER_INTF=enp129s0
 SERVER_IP=192.168.1.13
 
 
+
+
 # Parse command line arguments
 for i in "$@"
 do
@@ -21,9 +23,9 @@ case $i in
     FORCE=1
     ;;
 
-    # -r|--rebuild)           # rebuilds rdma source before using it for testing
-    # REBUILD=1
-    # ;;
+     -r|--rebuild)           # rebuilds rdma source before using it for testing
+     REBUILD=1
+     ;;
     
     -o=*|--opts=*)          # options for rdma_client program
     OPTS="${i#*=}"
@@ -45,7 +47,6 @@ if [[ "$(hostname)" != "$CLIENT_HOST" ]]; then
 fi
 
 # Rebuild source
-REBUILD=1
 CUR_PATH=`realpath $0`
 DIR=$(dirname $CUR_PATH)
 if [[ $REBUILD ]]; 
