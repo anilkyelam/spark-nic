@@ -1354,13 +1354,17 @@ int main(int argc, char **argv) {
         /* Set up a buffer with enough size on server, we don't need to do this for every qp since we only need 
          * one server-side buffer that we can reuse for all QPs but we do it anyway since server expects it */
         /* Once metadata is exchanged, server-side buffer metadata would be saved in server_qp_metadata_attr[*] */
+            printf("excanging metadata with server\n");
         for (i = 0; i < num_qps; i++) {
-            ret = client_xchange_metadata_with_server(i, NULL, 1024*1024);      // 1 MB
+            //ret = client_xchange_metadata_with_server(i, NULL, 1024*1024);      // 1 MB
+            //ret = client_xchange_metadata_with_server(i, NULL, 1024);      // 1 KB
+            ret = client_xchange_metadata_with_server(i, NULL, 4096);      // 1 KB
             if (ret) {
                 rdma_error("Failed to setup client connection , ret = %d \n", ret);
                 return ret;
             }
         }
+            printf("done excanging metadata with server");
         
         int min_num_concur = num_concur == 0 ? 1 : num_concur;
         int max_num_concur = num_concur == 0 ? 256 : num_concur;        /* Empirically found that anything above this number does not matter for single core */
@@ -1443,15 +1447,16 @@ int main(int argc, char **argv) {
                 //double rput_ops =  measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
 
             //This is the primer to set up the middle box
-            num_concur=372;
-            for (num_qps=1;num_qps<11;num_qps++){
-                num_concur=372*num_qps;
-                //for (num_concur = num_qps; num_concur <=num_qps*(MAX_RD_AT_IN_FLIGHT); num_concur+=num_qps) {
+            //num_qps=2;
+            //for (num_qps=1;num_qps<11;num_qps++){
+            //for (num_concur=1;num_concur<=16;num_concur*=2){
+            for (num_concur = num_qps*6; num_concur <=num_qps*(MAX_RD_AT_IN_FLIGHT); num_concur+=num_qps) {
+                //num_concur=372*num_qps;
                 //double rput_ops =  0.0;//measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
                 //double casput_ops = 0.0;// measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
                 double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops; 
-                double rput_ops = 0;// measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
-                double casput_ops = 0;//measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+                double rput_ops = measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+                double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
                 double wput_gbps = wput_ops * msg_size * 8 / 1e9;
                 double rput_gbps = rput_ops * msg_size * 8 / 1e9;
                 double casput_gbps = casput_ops * msg_size * 8 / 1e9;

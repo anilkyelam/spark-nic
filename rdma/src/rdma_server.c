@@ -9,6 +9,8 @@
 
 #include "rdma_common.h"
 
+#define USE_DEVICE_MEMORY
+
 /* These are the RDMA resources needed to setup an RDMA connection */
 /* Event channel, where connection management (cm) related events are relayed */
 static struct ibv_context **devices;
@@ -298,12 +300,23 @@ static int send_server_metadata_to_client(int qp_num)
         client_qp_metadata_attr[qp_num].length);
     /* We need to setup requested memory buffer. This is where the client will 
     * do RDMA READs and WRITEs. */
+
+    #ifndef USE_DEVICE_MEMORY
     server_qp_buffer_mr[qp_num] = rdma_buffer_alloc(pd /* which protection domain */, 
             client_qp_metadata_attr[qp_num].length /* what size to allocate */, 
             (IBV_ACCESS_LOCAL_WRITE|
             IBV_ACCESS_REMOTE_READ|
             IBV_ACCESS_REMOTE_ATOMIC|
             IBV_ACCESS_REMOTE_WRITE) /* access permissions */);
+    #else
+    server_qp_buffer_mr[qp_num] = rdma_buffer_alloc_dm(pd /* which protection domain */, 
+            client_qp_metadata_attr[qp_num].length /* what size to allocate */, 
+            (IBV_ACCESS_LOCAL_WRITE|
+            IBV_ACCESS_REMOTE_READ|
+            IBV_ACCESS_REMOTE_ATOMIC|
+            IBV_ACCESS_REMOTE_WRITE) /* access permissions */);
+    #endif
+
     if(!server_qp_buffer_mr[qp_num]){
         rdma_error("Server failed to create a buffer \n");
         /* we assume that it is due to out of memory error */

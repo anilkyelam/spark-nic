@@ -7,6 +7,7 @@
 
 #include "rdma_common.h"
 
+
 void show_rdma_cmid(struct rdma_cm_id *id)
 {
 	if(!id){
@@ -58,6 +59,7 @@ struct ibv_mr* rdma_buffer_alloc(struct ibv_pd *pd, uint32_t size,
 	return mr;
 }
 
+
 struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd, 
 		void *addr, uint32_t length, 
 		enum ibv_access_flags permission)
@@ -77,6 +79,60 @@ struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd,
 			(unsigned int) mr->length, 
 			mr->lkey);
 	return mr;
+}
+
+struct ibv_mr* rdma_buffer_alloc_dm(struct ibv_pd *pd, uint32_t size, enum ibv_access_flags permission) {
+	
+	struct ibv_alloc_dm_attr dm_attr = {0};
+	struct ibv_dm             *dm = {0};
+	struct ibv_mr			  *mr ={0};
+
+	struct ibv_device_attr_ex attrx;
+
+	if (ibv_query_device_ex(pd->context, NULL, &attrx)) {
+		printf("unable to query device for device memory alloc\n");
+		return NULL;
+	}
+
+	printf("max alloc size %d\n",attrx.max_dm_size);
+	if (!attrx.max_dm_size) {
+		printf("Device doesn't support dm allocation\n");
+		return NULL;
+	}
+
+	if (attrx.max_dm_size < size) {
+		return NULL;
+	}
+
+	dm_attr.length = size;
+	dm = ibv_alloc_dm(pd->context, &dm_attr);
+
+
+	if (!dm) {
+		printf("Unable to allocate device memory\n");
+		return NULL;
+	}
+
+	permission |= IBV_ACCESS_ZERO_BASED;
+
+	mr = ibv_reg_dm_mr(pd,dm,0,size,permission);
+
+	if (!mr) {
+		//rdma_error("Unable to register device memory\n");
+		printf("Unable to register device memory\n");
+		return NULL;
+	}
+
+	return mr;
+
+
+}
+
+struct ibv_mr *rdma_buffer_register_dm(struct ibv_pd *pd, 
+		void *addr, uint32_t length, 
+		enum ibv_access_flags permission)
+{
+
 }
 
 void rdma_buffer_free(struct ibv_mr *mr) 
