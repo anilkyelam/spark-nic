@@ -81,6 +81,12 @@ struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd,
 	return mr;
 }
 
+void print_dev_attributes(struct ibv_device_attr_ex * attr) {
+	printf("Fetch ADD %X\n",attr->pci_atomic_caps.fetch_add);
+	printf("SWAP %X\n",attr->pci_atomic_caps.swap);
+	printf("CAS %X\n",attr->pci_atomic_caps.compare_swap);
+}
+
 struct ibv_mr* rdma_buffer_alloc_dm(struct ibv_pd *pd, uint32_t size, enum ibv_access_flags permission) {
 	
 	struct ibv_alloc_dm_attr dm_attr = {0};
@@ -101,8 +107,15 @@ struct ibv_mr* rdma_buffer_alloc_dm(struct ibv_pd *pd, uint32_t size, enum ibv_a
 	}
 
 	if (attrx.max_dm_size < size) {
+		rdma_error("Size of %ld larger than max alloc %ll",size,attrx.max_dm_size);
 		return NULL;
 	}
+
+	if (attrx.max_dm_size != DEVICE_MEMORY_KB) {
+		printf("Defined value for max device memory not the same real: %ld static %d, are you running on CX5?\n",attrx.max_dm_size,DEVICE_MEMORY_KB);
+	}
+
+	print_dev_attributes(&attrx);
 
 	dm_attr.length = size;
 	dm = ibv_alloc_dm(pd->context, &dm_attr);

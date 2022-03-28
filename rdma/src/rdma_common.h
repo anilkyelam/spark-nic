@@ -86,6 +86,9 @@
 /* Self-imposed limit of total queue pairs */
 #define MAX_QPS 32
 
+#define USE_DEVICE_MEMORY
+#define DEVICE_MEMORY_KB 262144
+
 /* Bit field for work request id (NOT Portable) */
 union work_req_id {
     struct {
@@ -95,6 +98,9 @@ union work_req_id {
     } s;
     uint64_t val;
 };
+
+
+#define MEMORY_PERMISSION (IBV_ACCESS_LOCAL_WRITE|IBV_ACCESS_REMOTE_READ|IBV_ACCESS_REMOTE_ATOMIC|IBV_ACCESS_REMOTE_WRITE)
 
 /* 
  * We use attribute so that compiler does not step in and try to pad the structure.

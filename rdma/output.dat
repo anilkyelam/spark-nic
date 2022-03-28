@@ -1,0 +1,10 @@
+~/warm/spark-nic/rdma ~/warm/spark-nic/rdma
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/ssgrant/warm/spark-nic/rdma
+[ 16%] Building C object CMakeFiles/rdma_client.dir/src/rdma_common.c.o
+[ 33%] Building C object CMakeFiles/rdma_client.dir/src/rdma_client.c.o
+[ 50%] Linking C executable bin/rdma_client
+[ 50%] Built target rdma_client
+[ 66%] Building C object CMakeFiles/rdma_server.dir/src/rdma_common.c.o
+[ 83%] Building C object CMakeFiles/rdma_server.dir/src/rdma_server.c.o

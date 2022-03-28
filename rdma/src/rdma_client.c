@@ -8,6 +8,7 @@
 #include <sys/time.h>
 #include <assert.h>
 
+
 /* These are basic RDMA resources */
 /* These are RDMA connection related resources */
 static struct ibv_context **devices;
@@ -371,17 +372,12 @@ static int client_xchange_metadata_with_server(int qp_num, char* buffer, uint32_
         buffer == NULL ? 
             rdma_buffer_alloc(pd,
                 buffer_size,
-                (IBV_ACCESS_LOCAL_WRITE|
-                IBV_ACCESS_REMOTE_READ|
-                IBV_ACCESS_REMOTE_ATOMIC|
-                IBV_ACCESS_REMOTE_WRITE)) :
+                MEMORY_PERMISSION
+                ) :
             rdma_buffer_register(pd,
                 buffer,
                 strlen(buffer),
-                (IBV_ACCESS_LOCAL_WRITE|
-                IBV_ACCESS_REMOTE_READ|
-                IBV_ACCESS_REMOTE_ATOMIC|
-                IBV_ACCESS_REMOTE_WRITE));;
+                MEMORY_PERMISSION);;
     if(!client_qp_src_mr[qp_num]){
         rdma_error("Failed to register the first buffer, ret = %d \n", ret);
         return ret;
@@ -452,11 +448,8 @@ static int client_remote_memory_ops(int qp_num)
 
     client_qp_dst_mr[qp_num] = rdma_buffer_register(pd,
         dst,
-        strlen(src),
-        (IBV_ACCESS_LOCAL_WRITE | 
-            IBV_ACCESS_REMOTE_WRITE | 
-            IBV_ACCESS_REMOTE_ATOMIC | 
-            IBV_ACCESS_REMOTE_READ));
+        strlen(src), MEMORY_PERMISSION
+        );
     if (!client_qp_dst_mr[qp_num]) {
         rdma_error("We failed to create the destination buffer, -ENOMEM\n");
         return -ENOMEM;
@@ -536,7 +529,7 @@ static int client_remote_memory_ops(int qp_num)
 
 
 /* List of ops that are being instrumented */
-enum rdma_measured_op { RDMA_READ_OP, RDMA_WRITE_OP, RDMA_CAS_OP };
+enum rdma_measured_op { RDMA_READ_OP, RDMA_WRITE_OP, RDMA_CAS_OP, RDMA_FAA_OP};
 enum mem_reg_mode { 
     MR_MODE_PRE_REGISTER,               // Use a pre-registered buffer and use it for all transactions
     MR_MODE_PRE_REGISTER_WITH_ROTATE,   // Use a set of pre-registered buffers (for the same piece of memory) but rotate their usage
@@ -622,6 +615,9 @@ void * xput_thread(void * args) {
             case RDMA_CAS_OP:
                 local_client_send_wr_batch[i].opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
             break;
+            case RDMA_FAA_OP:
+                local_client_send_wr_batch[i].opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+            break;
         }
         //client_send_wr.opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
         local_client_send_wr_batch[i].send_flags |= IBV_SEND_SIGNALED;          // NOTE: This tells the other NIC to send completion events
@@ -636,6 +632,12 @@ void * xput_thread(void * args) {
             local_client_send_wr_batch[i].wr.atomic.rkey = server_qp_metadata_attr[0].stag.remote_stag;
             local_client_send_wr_batch[i].wr.atomic.compare_add = 0;
             local_client_send_wr_batch[i].wr.atomic.swap = 0;
+        }
+
+        if (rdma_op == RDMA_FAA_OP) {
+            local_client_send_wr_batch[i].wr.atomic.remote_addr = server_qp_metadata_attr[0].address;
+            local_client_send_wr_batch[i].wr.atomic.rkey = server_qp_metadata_attr[0].stag.remote_stag;
+            local_client_send_wr_batch[i].wr.atomic.compare_add = 1ULL;
         }
     }
 
@@ -714,6 +716,9 @@ void * xput_thread(void * args) {
                     local_client_send_wr_batch[i].wr.atomic.remote_addr = local_server_address + buf_offset;
                     local_client_send_wr_batch[i].wr.atomic.compare_add = 0;
                     local_client_send_wr_batch[i].wr.atomic.swap = 0;
+                } else if(rdma_op == RDMA_FAA_OP){
+                    local_client_send_wr_batch[i].wr.atomic.remote_addr = local_server_address + buf_offset;
+                    local_client_send_wr_batch[i].wr.atomic.compare_add = 1ULL;
                 }
                 buf_num     = targs->thread_id;
 
@@ -802,7 +807,7 @@ static result_t measure_xput(
      * and responder_resources determine such limit, which are again limited by hardware device 
      * attributes max_qp_rd_atom and max_qp_init_rd_atom. Why is there such a limit?  */
     /* In any case, for now, disallow request for concurrency more than the limit */
-    if ((rdma_op == RDMA_READ_OP || rdma_op == RDMA_CAS_OP) && num_concur > (MAX_RD_AT_IN_FLIGHT * num_qps)) {
+    if ((rdma_op == RDMA_READ_OP || rdma_op == RDMA_CAS_OP || rdma_op == RDMA_FAA_OP) && num_concur > (MAX_RD_AT_IN_FLIGHT * num_qps)) {
         rdma_error("Device cannot support more than %d outstnading READs (num_concur=%d, qps %d)\n", 
             MAX_RD_AT_IN_FLIGHT, num_concur,num_qps);
         result.err_code = -EOVERFLOW;
@@ -822,11 +827,9 @@ static result_t measure_xput(
     //size_t buf_size = msg_size * num_concur;
     size_t buf_size = get_buffer_size(num_concur,msg_size);
     mr_buffers[0] = rdma_buffer_alloc(pd,
-        buf_size,
-        (IBV_ACCESS_LOCAL_WRITE | 
-            IBV_ACCESS_REMOTE_WRITE | 
-            IBV_ACCESS_REMOTE_ATOMIC|
-            IBV_ACCESS_REMOTE_READ));
+        buf_size, MEMORY_PERMISSION
+            
+            );
     if (!mr_buffers[0]) {
         rdma_error("We failed to create the destination buffer, -ENOMEM\n");
         result.err_code = -ENOMEM;
@@ -840,11 +843,8 @@ static result_t measure_xput(
         for (i = 1; i < num_lbuffers; i++) {
             mr_buffers[i] = rdma_buffer_register(pd,
                 mr_buffers[0]->addr,
-                buf_size,
-                (IBV_ACCESS_LOCAL_WRITE | 
-                    IBV_ACCESS_REMOTE_WRITE | 
-                    IBV_ACCESS_REMOTE_ATOMIC|
-                    IBV_ACCESS_REMOTE_READ));
+                buf_size, MEMORY_PERMISSION
+                    );
 
             if (!mr_buffers[i]) {
                 rdma_error("Registering buffer %d failed\n", i);
@@ -881,6 +881,10 @@ static result_t measure_xput(
         case RDMA_CAS_OP:
             client_send_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
         break;
+        case RDMA_FAA_OP:
+            client_send_wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+            //client_send_wr.send_flags |= IBV_EXP_SEND_EXT_ATOMIC_INLINE;
+        break;
     }
     //client_send_wr.opcode = rdma_op == RDMA_READ_OP ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
     client_send_wr.send_flags |= IBV_SEND_SIGNALED;          // NOTE: This tells the other NIC to send completion events
@@ -894,6 +898,11 @@ static result_t measure_xput(
         client_send_wr.wr.atomic.rkey = server_qp_metadata_attr[0].stag.remote_stag;
         client_send_wr.wr.atomic.compare_add = 0;
         client_send_wr.wr.atomic.swap = 0;
+    }
+    if (rdma_op == RDMA_FAA_OP) {
+        client_send_wr.wr.atomic.remote_addr = server_qp_metadata_attr[0].address;
+        client_send_wr.wr.atomic.rkey = server_qp_metadata_attr[0].stag.remote_stag;
+        client_send_wr.wr.atomic.compare_add = 1ULL;
     }
 
 
@@ -922,9 +931,13 @@ static result_t measure_xput(
 
         if (rdma_op == RDMA_CAS_OP) {
             client_send_wr.wr.atomic.remote_addr = server_qp_metadata_attr[0].address + buf_offset;
-            //client_send_wr.wr.atomic.rkey = server_metadata_attr.stag.remote_stag;
             client_send_wr.wr.atomic.compare_add = 0;
             client_send_wr.wr.atomic.swap = 0;
+        }
+
+        if (rdma_op == RDMA_FAA_OP) {
+            client_send_wr.wr.atomic.remote_addr = server_qp_metadata_attr[0].address + buf_offset;
+            client_send_wr.wr.atomic.compare_add = 1ULL;
         }
 
         //printf("i %d\n",i);
@@ -940,8 +953,8 @@ static result_t measure_xput(
         wr_posted++;
 
         #define PARALLEL_KEYS 1
-        //slot_num    = (slot_num + 1) % num_concur;
-        slot_num    = (slot_num + 1) % GLOBAL_KEYS;
+        slot_num    = (slot_num + 1) % num_concur;
+        //slot_num    = (slot_num + 1) % GLOBAL_KEYS;
 
 
         //buf_offset  = slot_num * msg_size * 1024;
@@ -1356,9 +1369,11 @@ int main(int argc, char **argv) {
         /* Once metadata is exchanged, server-side buffer metadata would be saved in server_qp_metadata_attr[*] */
             printf("excanging metadata with server\n");
         for (i = 0; i < num_qps; i++) {
-            //ret = client_xchange_metadata_with_server(i, NULL, 1024*1024);      // 1 MB
-            //ret = client_xchange_metadata_with_server(i, NULL, 1024);      // 1 KB
-            ret = client_xchange_metadata_with_server(i, NULL, 4096);      // 1 KB
+            #ifdef USE_DEVICE_MEMORY
+            ret = client_xchange_metadata_with_server(i, NULL, (DEVICE_MEMORY_KB / (num_qps*2)));      // Relies on the server running CX5 TODO query remote device for mapped memory
+            #else
+            ret = client_xchange_metadata_with_server(i, NULL, 1024*1024);      // 1 MB
+            #endif
             if (ret) {
                 rdma_error("Failed to setup client connection , ret = %d \n", ret);
                 return ret;
@@ -1422,10 +1437,10 @@ int main(int argc, char **argv) {
             if (write_to_file) {
                 printf("Writing output to: %s\n", outfile);
                 fptr = fopen(outfile, "w");
-                fprintf(fptr,"msg size,concur,write_ops,write,read_ops,read,cas_ops,cas\n");
+                fprintf(fptr,"msg size,concur,write_ops,write,read_ops,read,cas_ops,cas,faa_ops,faa\n");
             }
             printf("=========== Xput =============\n");
-            printf("msg size,concur,write_ops,write,read_ops,read,cas_ops,cas,keys\n");
+            printf("msg size,concur,write_ops,write,read_ops,read,cas_ops,cas,faa_ops,faa,keys\n");
             num_mbuf=num_qps;
             //for (num_concur =128; num_concur <=1024; num_concur *= 2) {
             //for (num_concur = num_qps; num_concur <=num_qps*(MAX_RD_AT_IN_FLIGHT); num_concur*=2) {
@@ -1440,7 +1455,7 @@ int main(int argc, char **argv) {
 
             num_concur=1;
             GLOBAL_GAP_INTEGER=0;
-            GLOBAL_KEYS=1024;
+            GLOBAL_KEYS=1;
             //for (GLOBAL_GAP_INTEGER=0;GLOBAL_GAP_INTEGER<1024;GLOBAL_GAP_INTEGER+=8) {
             //for (GLOBAL_KEYS=1;GLOBAL_KEYS<num_concur;GLOBAL_KEYS++) {
             //for (GLOBAL_KEYS=1;GLOBAL_KEYS<16;GLOBAL_KEYS++) {
@@ -1450,19 +1465,21 @@ int main(int argc, char **argv) {
             //num_qps=2;
             //for (num_qps=1;num_qps<11;num_qps++){
             //for (num_concur=1;num_concur<=16;num_concur*=2){
-            for (num_concur = num_qps*6; num_concur <=num_qps*(MAX_RD_AT_IN_FLIGHT); num_concur+=num_qps) {
+            for (num_concur = num_qps; num_concur <=num_qps*(MAX_RD_AT_IN_FLIGHT); num_concur+=num_qps) {
                 //num_concur=372*num_qps;
-                //double rput_ops =  0.0;//measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
-                //double casput_ops = 0.0;// measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+                double rput_ops =  measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
                 double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops; 
-                double rput_ops = measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
                 double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+                //double rput_ops = measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+                //double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+                double faa_ops = measure_xput(msg_size, num_concur, RDMA_FAA_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
                 double wput_gbps = wput_ops * msg_size * 8 / 1e9;
                 double rput_gbps = rput_ops * msg_size * 8 / 1e9;
                 double casput_gbps = casput_ops * msg_size * 8 / 1e9;
-                printf("%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%d\n", msg_size, num_concur, wput_ops, wput_gbps, rput_ops, rput_gbps,casput_ops,casput_gbps,GLOBAL_KEYS);
+                double faa_gbps = casput_ops * msg_size * 8 / 1e9;
+                printf("%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%d\n", msg_size, num_concur, wput_ops, wput_gbps, rput_ops, rput_gbps,casput_ops,casput_gbps,faa_ops,faa_gbps,GLOBAL_KEYS);
                 if (write_to_file) {
-                    fprintf(fptr,"%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%d\n", msg_size, num_concur, wput_ops, wput_gbps, rput_ops, rput_gbps,casput_ops,casput_gbps,GLOBAL_GAP_INTEGER);
+                    fprintf(fptr,"%d,%d,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%.2lf,%d\n", msg_size, num_concur, wput_ops, wput_gbps, rput_ops, rput_gbps,casput_ops,casput_gbps,faa_ops,faa_gbps,GLOBAL_GAP_INTEGER);
                     fflush(fptr);
                 
                 }

@@ -1,0 +1,3 @@
+/home/ssgrant/warm/spark-nic/rdma/src/rdma_server.c : 153 : ERROR : Failed to bind server address, errno: -99 
+/home/ssgrant/warm/spark-nic/rdma/src/rdma_server.c : 512 : ERROR : RDMA server failed to start cleanly, ret = -99 
+1 devices found, using the first one: mlx5_0

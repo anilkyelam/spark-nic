@@ -9,7 +9,6 @@
 
 #include "rdma_common.h"
 
-#define USE_DEVICE_MEMORY
 
 /* These are the RDMA resources needed to setup an RDMA connection */
 /* Event channel, where connection management (cm) related events are relayed */
@@ -27,6 +26,7 @@ static struct rdma_buffer_attr client_qp_metadata_attr[MAX_QPS], server_qp_metad
 static struct ibv_recv_wr client_recv_wr, *bad_client_recv_wr = NULL;
 static struct ibv_send_wr server_send_wr, *bad_server_send_wr = NULL;
 static struct ibv_sge client_recv_sge, server_send_sge;
+
 
 
 /* Setup shared resources used for all connections */
@@ -304,17 +304,13 @@ static int send_server_metadata_to_client(int qp_num)
     #ifndef USE_DEVICE_MEMORY
     server_qp_buffer_mr[qp_num] = rdma_buffer_alloc(pd /* which protection domain */, 
             client_qp_metadata_attr[qp_num].length /* what size to allocate */, 
-            (IBV_ACCESS_LOCAL_WRITE|
-            IBV_ACCESS_REMOTE_READ|
-            IBV_ACCESS_REMOTE_ATOMIC|
-            IBV_ACCESS_REMOTE_WRITE) /* access permissions */);
+            (MEMORY_PERMISSION
+            ) /* access permissions */);
     #else
+    printf("allocing device memory\n");
     server_qp_buffer_mr[qp_num] = rdma_buffer_alloc_dm(pd /* which protection domain */, 
             client_qp_metadata_attr[qp_num].length /* what size to allocate */, 
-            (IBV_ACCESS_LOCAL_WRITE|
-            IBV_ACCESS_REMOTE_READ|
-            IBV_ACCESS_REMOTE_ATOMIC|
-            IBV_ACCESS_REMOTE_WRITE) /* access permissions */);
+            (MEMORY_PERMISSION) /* access permissions */);
     #endif
 
     if(!server_qp_buffer_mr[qp_num]){
