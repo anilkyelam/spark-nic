@@ -953,8 +953,8 @@ static result_t measure_xput(
         wr_posted++;
 
         #define PARALLEL_KEYS 1
-        slot_num    = (slot_num + 1) % num_concur;
-        //slot_num    = (slot_num + 1) % GLOBAL_KEYS;
+        //slot_num    = (slot_num + 1) % num_concur;
+        slot_num    = (slot_num + 1) % GLOBAL_KEYS;
 
 
         //buf_offset  = slot_num * msg_size * 1024;
@@ -1372,7 +1372,7 @@ int main(int argc, char **argv) {
             #ifdef USE_DEVICE_MEMORY
             ret = client_xchange_metadata_with_server(i, NULL, (DEVICE_MEMORY_KB / (num_qps*2)));      // Relies on the server running CX5 TODO query remote device for mapped memory
             #else
-            ret = client_xchange_metadata_with_server(i, NULL, 1024*1024);      // 1 MB
+            ret = client_xchange_metadata_with_server(i, NULL, 1024*1024*64);      // 1 MB
             #endif
             if (ret) {
                 rdma_error("Failed to setup client connection , ret = %d \n", ret);
@@ -1453,9 +1453,11 @@ int main(int argc, char **argv) {
 
 
 
-            num_concur=1;
-            GLOBAL_GAP_INTEGER=0;
-            GLOBAL_KEYS=1;
+            num_concur=92;
+            GLOBAL_GAP_INTEGER=8;
+            //Set this value if we only want one key, it controls what happens in measure_xput.
+            //GLOBAL_KEYS=1024;
+            GLOBAL_KEYS=8192;
             //for (GLOBAL_GAP_INTEGER=0;GLOBAL_GAP_INTEGER<1024;GLOBAL_GAP_INTEGER+=8) {
             //for (GLOBAL_KEYS=1;GLOBAL_KEYS<num_concur;GLOBAL_KEYS++) {
             //for (GLOBAL_KEYS=1;GLOBAL_KEYS<16;GLOBAL_KEYS++) {
@@ -1463,16 +1465,17 @@ int main(int argc, char **argv) {
 
             //This is the primer to set up the middle box
             //num_qps=2;
-            //for (num_qps=1;num_qps<11;num_qps++){
+            for (num_qps=1;num_qps<24;num_qps++){
             //for (num_concur=1;num_concur<=16;num_concur*=2){
-            for (num_concur = num_qps; num_concur <=num_qps*(MAX_RD_AT_IN_FLIGHT); num_concur+=num_qps) {
-                //num_concur=372*num_qps;
-                double rput_ops =  measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+            //for (num_concur = num_qps; num_concur <=num_qps*(MAX_RD_AT_IN_FLIGHT); num_concur+=num_qps) {
+                num_concur=372*num_qps;
+                //double rput_ops =  measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
                 double wput_ops = measure_xput(msg_size, num_concur, RDMA_WRITE_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops; 
-                double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
-                //double rput_ops = measure_xput(msg_size, num_concur, RDMA_READ_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
                 //double casput_ops = measure_xput(msg_size, num_concur, RDMA_CAS_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
-                double faa_ops = measure_xput(msg_size, num_concur, RDMA_FAA_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+                //double faa_ops = measure_xput(msg_size, num_concur, RDMA_FAA_OP, MR_MODE_PRE_REGISTER, num_mbuf, num_qps).xput_ops;
+                double rput_ops =1;
+                double casput_ops = 1;
+                double faa_ops = 1;
                 double wput_gbps = wput_ops * msg_size * 8 / 1e9;
                 double rput_gbps = rput_ops * msg_size * 8 / 1e9;
                 double casput_gbps = casput_ops * msg_size * 8 / 1e9;

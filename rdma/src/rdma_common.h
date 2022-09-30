@@ -86,7 +86,7 @@
 /* Self-imposed limit of total queue pairs */
 #define MAX_QPS 32
 
-#define USE_DEVICE_MEMORY
+//#define USE_DEVICE_MEMORY
 #define DEVICE_MEMORY_KB 262144
 
 /* Bit field for work request id (NOT Portable) */
