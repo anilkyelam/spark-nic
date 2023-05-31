@@ -62,6 +62,7 @@ fi
 echo "Starting server"
 SERVER_PORT=20886
 ssh "$SERVER_HOST" "pkill rdma_server"
+echo "starting server with server arguments $SRV_OPTS"
 ssh "$SERVER_HOST" "nohup ${DIR}/bin/rdma_server -p $SERVER_PORT ${SRV_OPTS} &> /dev/null &"
 if [[ $? -ne 0 ]]; then 
     echo "ERROR! Setting up RDMA server failed!";
@@ -71,3 +72,4 @@ sleep 1
 # Run client on the client host 
 echo "Running client with options: $OPTS"
 taskset 0x4 ${DIR}/bin/rdma_client -a ${SERVER_IP} -p ${SERVER_PORT} ${OPTS}
+# gdb --args ${DIR}/bin/rdma_client -a ${SERVER_IP} -p ${SERVER_PORT} ${OPTS}
